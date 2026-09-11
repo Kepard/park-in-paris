@@ -6,6 +6,7 @@ import type {
   Plan,
   SavedTrip,
   TripInput,
+  SearchTrace,
 } from "../types";
 import { getInventory, getRoute } from "./api";
 import { eligible, holidays, parseParis, parisParts, rushFactor } from "./rules";
@@ -137,6 +138,7 @@ export async function planTrip(
   trips: SavedTrip[],
   progress: (stage: string, count?: number) => void,
   signal: AbortSignal,
+  onTrace?: (trace: SearchTrace) => void,
 ): Promise<Plan> {
   const departure = parseParis(input.departure),
     returnAt = parseParis(input.returnAt);
@@ -151,7 +153,17 @@ export async function planTrip(
     throw new Error(
       "Choose a destination inside Paris. The Bois de Boulogne and Vincennes are outside this pilot.",
     );
-  progress("Reading the Paris parking inventory");
+  const multiplier = rushFactor(departure, input.rushAllowance);
+  let directDrive: number | null = null;
+  progress("Tracing your journey through the streets", 3);
+  try {
+    const direct = await getRoute(input.origin.coordinates, input.destination.coordinates, "car", signal);
+    directDrive = direct.duration * multiplier / 60;
+    onTrace?.({ id: "direct", geometry: direct.geometry });
+  } catch {
+    signal.throwIfAborted();
+  }
+  progress("Reading the Paris parking inventory", 6);
   const inventory = await getInventory();
   signal.throwIfAborted();
   const groups = groupsFor(inventory, input);
@@ -159,8 +171,7 @@ export async function planTrip(
     throw new Error(
       "No supported parking streets were found nearby. Try a longer walking limit.",
     );
-  const multiplier = rushFactor(departure, input.rushAllowance),
-    candidates: Candidate[] = [],
+  const candidates: Candidate[] = [],
     warnings: string[] = [];
   let failed = 0;
   for (let index = 0; index < groups.length; index++) {
@@ -168,7 +179,7 @@ export async function planTrip(
     const g = groups[index];
     progress(
       `Comparing street ${index + 1} of ${groups.length}`,
-      Math.round((index / groups.length) * 90),
+      8 + Math.round((index / groups.length) * 82),
     );
     try {
       const walk = await getRoute(
@@ -184,6 +195,7 @@ export async function planTrip(
         "car",
         signal,
       );
+      onTrace?.({ id: g.id, geometry: { type: "LineString", coordinates: [...drive.geometry.coordinates, ...walk.geometry.coordinates] } });
       // Eligibility uses earliest modelled arrival; a congestion allowance must not unlock delivery bays.
       const earliestArrival = new Date(
         departure.getTime() + drive.duration * 1000,
@@ -290,22 +302,6 @@ export async function planTrip(
       if (distinct.length === 3) break;
     }
   progress("Putting your best arrivals in order", 95);
-  let directDrive: number | null = null;
-  try {
-    directDrive =
-      ((
-        await getRoute(
-          input.origin.coordinates,
-          input.destination.coordinates,
-          "car",
-          signal,
-        )
-      ).duration *
-        multiplier) /
-      60;
-  } catch {
-    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-  }
   return {
     input,
     candidates: distinct,

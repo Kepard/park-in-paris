@@ -2,24 +2,32 @@ import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import mapWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { Plan, Place } from "../types";
+import type { Plan, Place, SearchTrace } from "../types";
+import { useSearchRays } from "./useSearchRays";
 maplibregl.setWorkerUrl(mapWorkerUrl);
 export function MapView({
   plan,
   selected,
   onSelect,
   destination,
+  origin,
+  searching,
+  traces,
 }: {
   plan: Plan | null;
   selected: number;
   onSelect: (i: number) => void;
   destination: Place | null;
+  origin: Place | null;
+  searching: boolean;
+  traces: SearchTrace[];
 }) {
   const container = useRef<HTMLDivElement>(null),
     mapRef = useRef<maplibregl.Map | null>(null),
     markers = useRef<maplibregl.Marker[]>([]),
     [ready, setReady] = useState(false),
     [error, setError] = useState(false);
+  useSearchRays(mapRef, ready, searching, traces);
   useEffect(() => {
     if (!container.current) return;
     let map: maplibregl.Map;
@@ -112,7 +120,7 @@ export function MapView({
     markers.current = [];
     const source = map.getSource("routes") as maplibregl.GeoJSONSource,
       parking = map.getSource("parking") as maplibregl.GeoJSONSource;
-    const candidate = plan?.candidates[selected];
+    const candidate = searching ? undefined : plan?.candidates[selected];
     source.setData({
       type: "FeatureCollection",
       features: candidate
@@ -140,7 +148,7 @@ export function MapView({
           }))
         : [],
     });
-    if (plan)
+    if (plan && !searching)
       plan.candidates.forEach((c, index) => {
         const button = document.createElement("button");
         button.className = `zone-marker ${index === selected ? "selected" : ""}`;
@@ -172,14 +180,21 @@ export function MapView({
       );
     }
     const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (candidate) {
+    if (searching && origin && destination) {
+      const startMarker = document.createElement("div");
+      startMarker.className = "search-origin-marker";
+      startMarker.setAttribute("aria-label", "Journey starts here");
+      markers.current.push(new maplibregl.Marker({ element: startMarker }).setLngLat(origin.coordinates).addTo(map));
+      const bounds = new maplibregl.LngLatBounds().extend(origin.coordinates).extend(destination.coordinates);
+      map.fitBounds(bounds, { padding: innerWidth < 760 ? { top: 95, bottom: 220, left: 35, right: 35 } : { top: 125, bottom: 160, left: 490, right: 80 }, duration: reduced ? 0 : 900, maxZoom: 14.5 });
+    } else if (candidate) {
       const bounds = new maplibregl.LngLatBounds();
       candidate.drive.geometry.coordinates.forEach((p) => bounds.extend(p));
       candidate.walk.geometry.coordinates.forEach((p) => bounds.extend(p));
       const mobile = innerWidth < 760;
       map.fitBounds(bounds, {
         padding: mobile
-          ? { top: 95, bottom: 60, left: 35, right: 35 }
+          ? { top: 95, bottom: 260, left: 35, right: 35 }
           : { top: 130, bottom: 130, left: 485, right: 90 },
         duration: reduced ? 0 : 1000,
         maxZoom: 15,
@@ -191,7 +206,7 @@ export function MapView({
         duration: reduced ? 0 : 800,
         zoom: 14,
       });
-  }, [ready, plan, selected, onSelect, destination]);
+  }, [ready, plan, selected, onSelect, destination, origin, searching]);
   return (
     <>
       <div className="map-surface" ref={container} />

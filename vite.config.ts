@@ -5,5 +5,6 @@ const inventoryVersion = JSON.parse(readFileSync(new URL("./public/data/parking.
 export default defineConfig({
   plugins: [react()],
   base: "/projects/park-in-paris/",
+  server: { proxy: { "/projects/park-in-paris/api": "http://127.0.0.1:3001" } },
   define: { "import.meta.env.VITE_INVENTORY_VERSION": JSON.stringify(inventoryVersion) },
 });

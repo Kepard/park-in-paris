@@ -33,6 +33,7 @@ export type RouteData = {
   distance: number;
   geometry: { type: "LineString"; coordinates: Coordinate[] };
 };
+export type SearchTrace = { id: string; geometry: RouteData["geometry"] };
 export type Candidate = {
   id: string;
   street: string;

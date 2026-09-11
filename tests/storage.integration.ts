@@ -1,0 +1,52 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
+import handler from "../api/trips.js";
+import type { SavedTrip } from "../src/types.js";
+
+test("private server histories isolate browsers and retain completed feedback", async () => {
+  const server = createServer((req, res) => { void handler(req, res); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as { port: number };
+  const url = `http://127.0.0.1:${address.port}/projects/park-in-paris/api/trips`;
+  const place = { label: "Storage integration test", coordinates: [2.33,48.87] as [number,number] };
+  const route = { duration: 60, distance: 100, geometry: { type: "LineString" as const, coordinates: [place.coordinates, place.coordinates] } };
+  const trip: SavedTrip = { id: randomUUID(), createdAt: new Date().toISOString(), status: "active", modelVersion: "integration-test", input: { origin: place, destination: place, departure: "2026-09-14T18:00", returnAt: "2026-09-14T22:00", maxWalk: 20, rushAllowance: false, useExperience: false }, candidate: { id: "test-bay", street: "Test street", arrondissement: 9, coordinates: place.coordinates, bays: [], capacity: 4, sharedCapacity: 0, drive: route, walk: route, driveMinutes: 1, walkMinutes: 1, searchLow: 2, searchHigh: 5, totalLow: 4, totalHigh: 7, total: 5.5, arrival: "2026-09-14T16:01:00.000Z", learnedFrom: 0, reason: "Test", parkingType: "paid" } };
+  let cookie = "";
+  const send = (method: string, data?: unknown, auth = cookie, suffix = "") => fetch(url + suffix, { method, headers: { Cookie: auth, "Content-Type": "application/json", "X-Park-Client": "1", Origin: "https://kepard.dev" }, ...(data ? { body: JSON.stringify(data) } : {}) });
+  try {
+    const a = await send("GET");
+    assert.equal(a.status, 200);
+    const setCookie = a.headers.get("set-cookie")!;
+    assert.match(setCookie, /HttpOnly/); assert.match(setCookie, /SameSite=Strict/);
+    cookie = setCookie.split(";")[0];
+    assert.equal((await a.json()).newHistory, true);
+    assert.equal((await (await send("GET")).json()).newHistory, false);
+    const b = await send("GET", undefined, "");
+    const otherCookie = b.headers.get("set-cookie")!.split(";")[0];
+    assert.notEqual(cookie, otherCookie);
+    assert.equal((await send("PUT", trip)).status, 200);
+    assert.equal((await (await send("GET")).json()).trips[0].id, trip.id);
+    assert.equal((await (await send("GET", undefined, otherCookie)).json()).trips.length, 0);
+    assert.equal((await send("DELETE", undefined, otherCookie, `?id=${trip.id}`)).status, 200);
+    assert.equal((await (await send("GET")).json()).trips.length, 1);
+    const finished = { ...trip, status: "completed", completedAt: new Date().toISOString(), survey: { outcome: "gave-up", searchMinutes: 12, streetsTried: 3, bayType: "ordinary", note: "Integration test", submittedAt: new Date().toISOString(), actualStreet: "", observedArrival: "2026-09-07T16:00:00.000Z" } };
+    assert.equal((await send("PUT", finished)).status, 200);
+    assert.equal((await send("PUT", trip)).status, 200);
+    const stored = (await (await send("GET")).json()).trips[0];
+    assert.equal(stored.status, "completed"); assert.equal(stored.survey.outcome, "gave-up");
+    assert.equal((await send("PUT", { ...trip, id: "not-an-id" })).status, 400);
+    assert.equal((await send("PUT", { ...trip, input: { ...trip.input, returnAt: "2026-02-30T12:00" } })).status, 400);
+    assert.equal((await send("PUT", trip, "")).status, 401);
+    const crossSite = await fetch(url, { headers: { Cookie: cookie, Origin: "https://unrelated.example" } });
+    assert.equal(crossSite.status, 403);
+    assert.match(a.headers.get("cache-control")!, /no-store/);
+    assert.equal((await send("DELETE", undefined, cookie, `?id=${trip.id}`)).status, 200);
+    assert.equal((await send("PUT", finished)).status, 200);
+    assert.equal((await (await send("GET")).json()).trips.length, 0);
+  } finally {
+    if (cookie) await send("DELETE", undefined, cookie, `?id=${trip.id}`);
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});

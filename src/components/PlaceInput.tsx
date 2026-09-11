@@ -34,7 +34,7 @@ export function PlaceInput({
     const timer = setTimeout(() => {
       setBusy(true);
       setError("");
-      geocode(text, abort.signal)
+      geocode(text, abort.signal, !origin)
         .then(setChoices)
         .catch(() => {
           if (!abort.signal.aborted)
@@ -48,7 +48,7 @@ export function PlaceInput({
       clearTimeout(timer);
       abort.abort();
     };
-  }, [text, open, value]);
+  }, [text, open, value, origin]);
   function locate() {
     setBusy(true);
     setError("");

@@ -19,6 +19,7 @@ import {
   Navigation,
   CheckCircle2,
   Sparkles,
+  ScanEye,
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -26,12 +27,13 @@ import { PlaceInput } from "./components/PlaceInput";
 import { MapView } from "./components/MapView";
 import { Modal } from "./components/Modal";
 import { SurveyForm } from "./components/SurveyForm";
-import { GARNIER, MONTREUIL, navigationURL } from "./lib/api";
+import { GARNIER, MONTREUIL, navigationURL, streetViewURL } from "./lib/api";
 import { defaultTimes, parseParis } from "./lib/rules";
 import { planTrip } from "./lib/planner";
-import { exportTrips, readTrips, saveTrips } from "./lib/storage";
+import { exportTrips } from "./lib/storage";
+import { useTripStore } from "./lib/useTripStore";
 import { usePlanTool } from "./lib/usePlanTool";
-import type { Place, Plan, SavedTrip, Survey, TripInput } from "./types";
+import type { Place, Plan, SavedTrip, Survey, TripInput, SearchTrace } from "./types";
 
 const formatTime = (iso: string) =>
   new Intl.DateTimeFormat("en-GB", {
@@ -55,6 +57,7 @@ function initialPrefs() {
   }
 }
 export default function App() {
+  const { trips, saveTrips, status: syncStatus, error: syncError, sync } = useTripStore();
   const [origin, setOrigin] = useState<Place | null>(MONTREUIL),
     [destination, setDestination] = useState<Place | null>(GARNIER),
     [times, setTimes] = useState(defaultTimes),
@@ -63,14 +66,14 @@ export default function App() {
     [rushAllowance, setRushAllowance] = useState(prefs.rushAllowance !== false),
     [useExperience, setUseExperience] = useState(prefs.useExperience !== false);
   const [plan, setPlan] = useState<Plan | null>(null),
+    [traces, setTraces] = useState<SearchTrace[]>([]),
     [selected, setSelected] = useState(0),
     [searching, setSearching] = useState(false),
     [stage, setStage] = useState("Reading the Paris parking inventory"),
     [progress, setProgress] = useState(0),
     [error, setError] = useState(""),
     [tab, setTab] = useState<"plan" | "results">("plan");
-  const [trips, setTrips] = useState<SavedTrip[]>(readTrips),
-    [showHistory, setShowHistory] = useState(false),
+  const [showHistory, setShowHistory] = useState(false),
     [showInfo, setShowInfo] = useState(false),
     [showSettings, setShowSettings] = useState(false),
     [surveyId, setSurveyId] = useState<string | null>(null),
@@ -126,7 +129,6 @@ export default function App() {
   function updateTrips(next: SavedTrip[]) {
     try {
       saveTrips(next);
-      setTrips(next);
       return true;
     } catch {
       setToast(
@@ -146,6 +148,8 @@ export default function App() {
     const controller = new AbortController();
     abortRef.current = controller;
     setSearching(true);
+    setTraces([]);
+    if (innerWidth <= 760) window.scrollTo({ top: 0, behavior: reduceMotion ? "instant" : "smooth" });
     setProgress(2);
     setStage("Reading the Paris parking inventory");
     try {
@@ -165,6 +169,7 @@ export default function App() {
           if (n !== undefined) setProgress(n);
         },
         controller.signal,
+        trace => { if (!controller.signal.aborted) setTraces(current => [...current.filter(t => t.id !== trace.id), trace]); },
       );
       if (controller.signal.aborted) return;
       setPlan(result);
@@ -229,6 +234,9 @@ export default function App() {
         selected={selected}
         onSelect={selectCandidate}
         destination={destination}
+        origin={origin}
+        searching={searching}
+        traces={traces}
       />
       <header className="topbar">
         <a
@@ -565,6 +573,9 @@ export default function App() {
               <p className="nav-caption">
                 Driving directions to the start of your search area.
               </p>
+              <a className="street-view-link" href={streetViewURL(candidate.coordinates)} target="_blank" rel="noopener noreferrer">
+                <ScanEye size={18} /> Preview {candidate.street} in Street View <ArrowUpRight size={16} />
+              </a>
               <button
                 className="primary-button"
                 onClick={startTrip}
@@ -616,26 +627,13 @@ export default function App() {
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 1.03 }}
           >
-            <div className="search-radar">
-              <span className="radar-ring ring-one" />
-              <span className="radar-ring ring-two" />
-              <span className="radar-ring ring-three" />
-              <div className="search-orbit">
-                <span />
-              </div>
-              <div className="search-core">
-                <Route size={29} />
-              </div>
-              <span className="radar-dot dot-one" />
-              <span className="radar-dot dot-two" />
-              <span className="radar-dot dot-three" />
-            </div>
-            <h2>A little less circling.</h2>
+            <div className="ray-legend" aria-hidden="true"><span /><span /><span /><span /></div>
+            <h2>Following the possibilities.</h2>
             <p>{stage}</p>
             <div className="search-progress" aria-hidden="true">
               <span style={{ width: `${Math.max(5, progress)}%` }} />
             </div>
-            <small>Connecting real streets. Comparing complete journeys.</small>
+            <small>Real routes, traced as we compare your options.</small>
           </motion.div>
         ) : null}
       </AnimatePresence>
@@ -695,10 +693,11 @@ export default function App() {
               Your final walk can vary with the exact space you find.
             </p>
             <p>
-              <strong>Your experience stays yours.</strong> Trips and feedback
-              live in this browser. Export them before changing devices or
-              clearing browser data. Survey reminders appear when you return to
-              the app; the app does not track your trip in the background.
+              <strong>Private, server-saved history.</strong> Trips and feedback
+              sync to our database using a private browser identifier, with no
+              login. A local copy keeps changes safe while offline. Clearing
+              cookies loses access to this history; export before changing
+              browsers. Reminders appear when you return to the app.
             </p>
             <div className="source-links">
               <a
@@ -737,10 +736,16 @@ export default function App() {
           title="Your little journeys."
           onClose={() => setShowHistory(false)}
         >
+          <div className={`sync-status ${syncStatus}`} role="status">
+            {syncStatus === "saved" ? <CheckCircle2 size={16} /> : syncStatus === "syncing" ? <LoaderCircle size={16} className="spin" /> : <Info size={16} />}
+            <span>{syncStatus === "saved" ? "Saved privately on the server" : syncStatus === "syncing" ? "Syncing your history…" : "Saved on this device · sync pending"}</span>
+            {syncStatus === "offline" ? <button onClick={() => void sync()}>Retry</button> : null}
+          </div>
+          {syncError ? <p className="field-error">{syncError}</p> : null}
           {trips.length ? (
             <>
               <p className="history-intro">
-                Your plans and experiences, saved on this device.
+                Your plans and experiences. No login; linked to this browser.
               </p>
               <div className="trip-list">
                 {trips.map((t) => (
@@ -806,7 +811,7 @@ export default function App() {
                       onClick={() => {
                         if (
                           window.confirm(
-                            "Delete this trip and its feedback from this device?",
+                            "Delete this trip and its feedback from the server and this device?",
                           )
                         )
                           updateTrips(trips.filter((x) => x.id !== t.id));

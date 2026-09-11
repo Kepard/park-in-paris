@@ -5,17 +5,22 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "dev:api": "node --env-file=.env.local --import tsx scripts/dev-api.ts",
+    "db:setup": "node --env-file=.env.local scripts/setup-database.mjs",
+    "test:server": "node --env-file=.env.local --import tsx --test tests/storage.integration.ts",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "test": "node --import tsx --test tests/*.test.ts",
     "data:refresh": "node scripts/import-parking.mjs"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
     "lucide-react": "^0.468.0",
     "maplibre-gl": "^6.9.0",
     "motion": "^12.23.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "zod": "^4.6.2"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

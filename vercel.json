@@ -4,6 +4,7 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [
+    { "source": "/projects/park-in-paris/api/:path*", "destination": "/api/:path*" },
     { "source": "/projects/park-in-paris/", "destination": "/index.html" },
     {
       "source": "/projects/park-in-paris/assets/:path*",

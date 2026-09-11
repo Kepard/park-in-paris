@@ -27,27 +27,28 @@ export async function fetchJSON<T>(
 export async function geocode(
   query: string,
   signal?: AbortSignal,
+  parisOnly = false,
 ): Promise<Place[]> {
   const presets = /garnier|op[ée]ra de paris/i.test(query) ? [GARNIER] : [];
   const data = await fetchJSON<{
     features: {
       geometry: { coordinates: Coordinate };
-      properties: { label: string; postcode?: string; score: number };
+      properties: { label?: string; toponym?: string; city?: string | string[]; postcode?: string | string[]; score?: number };
     }[];
   }>(
-    `https://data.geopf.fr/geocodage/search?${new URLSearchParams({ q: query, limit: "5" })}`,
+    `https://data.geopf.fr/geocodage/search?${new URLSearchParams({ q: query, index: "address,poi", limit: "8", lon: "2.35", lat: "48.86", ...(parisOnly ? { depcode: "75" } : {}) })}`,
     signal,
   );
   return [
     ...presets,
     ...data.features
-      .filter((f) => f.properties.score > 0.4)
+      .filter((f) => (f.properties.score ?? 1) > 0.4 && (f.properties.label || f.properties.toponym))
       .map((f) => ({
-        label: f.properties.label,
+        label: f.properties.label || `${f.properties.toponym} · ${Array.isArray(f.properties.city) ? f.properties.city[0] : f.properties.city || "Paris"}`,
         coordinates: f.geometry.coordinates,
-        postcode: f.properties.postcode,
+        postcode: Array.isArray(f.properties.postcode) ? f.properties.postcode[0] : f.properties.postcode,
       })),
-  ].slice(0, 5);
+  ].filter((p, i, all) => all.findIndex(other => other.label === p.label) === i).slice(0, 5);
 }
 let inventoryPromise: Promise<Inventory> | null = null;
 export function getInventory() {
@@ -125,4 +126,7 @@ export function navigationURL(
   });
   if (origin) p.set("origin", `${origin[1]},${origin[0]}`);
   return `https://www.google.com/maps/dir/?${p}`;
+}
+export function streetViewURL(coordinates: Coordinate) {
+  return `https://www.google.com/maps/@?${new URLSearchParams({ api: "1", map_action: "pano", viewpoint: `${coordinates[1]},${coordinates[0]}` })}`;
 }

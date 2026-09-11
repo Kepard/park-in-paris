@@ -1480,3 +1480,29 @@ h1 {
     font-size: 11px;
   }
 }
+
+/* Route pulses live on the map; the status stays out of their way. */
+.search-display { top: auto; bottom: 35px; left: auto; right: 40px; transform: none !important; width: 360px; padding: 19px 22px; text-align: left; }
+.search-display h2 { font-size: 20px; margin-bottom: 8px; }
+.search-display p { margin-bottom: 12px; font-size: 14px; }
+.search-display small { font-size: 12px; }
+.search-display .search-progress { width: 100%; }
+.search-progress span { background: linear-gradient(90deg,#00a6c7,#9363ef,#f08d35); }
+.ray-legend { display: flex; gap: 5px; margin-bottom: 12px; }
+.ray-legend span { height: 4px; width: 27px; border-radius: 4px; background: #00a6c7; }
+.ray-legend span:nth-child(2) { background: #9363ef; }
+.ray-legend span:nth-child(3) { background: #f08d35; }
+.ray-legend span:nth-child(4) { background: #40b87b; }
+.search-origin-marker { width: 18px; height: 18px; background: #00a6c7; border: 3px solid white; border-radius: 50%; box-shadow: 0 0 0 8px #00a6c729,0 0 25px #00a6c766; }
+.street-view-link { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 13px 14px; border: 1px solid #dce4d9; border-radius: 13px; color: var(--ink); font-size: 13px; text-decoration: none; margin: 0 0 14px; background: #f4f7ed; }
+.street-view-link:hover { background: #eaf1df; }
+@media (max-width: 760px) {
+  .search-display { position: absolute; top: 345px; bottom: auto; left: 20px; right: 20px; width: auto; max-width: none; padding: 13px 16px; }
+  .search-display h2 { font-size: 17px; }
+  .search-display p { font-size: 12px; }
+  .ray-legend { margin-bottom: 7px; }
+  .app:has(.search-display) .planner { margin-top: 430px; }
+}
+.sync-status { display:flex; align-items:center; gap:8px; font-size:13px; line-height:1.5; padding:12px; border-radius:12px; background:#edf4e6; margin:4px 0 16px; }
+.sync-status.offline { background:#fff2df; }
+.sync-status button { margin-left:auto; border:0; background:none; text-decoration:underline; cursor:pointer; }
