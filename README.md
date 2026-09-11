@@ -37,4 +37,4 @@ No secrets belong in this repository. No account or credential is needed to use 
 
 ## Optional browser tool
 
-Feature-detected WebMCP exposes `read_parking_recommendations`, a read-only view of the current results. Normal browsing needs no WebMCP support. Native tool validation was unavailable in the test browser; the standard UI was tested directly.
+Feature-detected WebMCP exposes `read_parking_recommendations`, a read-only view of the current results. Normal browsing needs no WebMCP support. Registration, empty-state and populated-result reads, and rejection of invalid input were verified in a compatible browser alongside the standard UI.
