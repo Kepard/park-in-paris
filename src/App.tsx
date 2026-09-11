@@ -449,7 +449,7 @@ export default function App() {
               </button>
               <div className="eyebrow result-eyebrow">YOUR BEST ARRIVALS</div>
               <h1 className="result-title">
-                A good place
+                A good place{" "}
                 <br />
                 to start.
               </h1>

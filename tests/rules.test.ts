@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   eligible,
   holidays,
@@ -11,6 +12,15 @@ import { groupsFor, searchEstimate } from "../src/lib/planner";
 import { navigationURL } from "../src/lib/api";
 import type { Bay, SavedTrip } from "../src/types";
 const at = parseParis;
+test("the shipped inventory contains only supported car and shared-delivery categories", () => {
+  const inventory = JSON.parse(readFileSync(new URL("../public/data/parking.json", import.meta.url), "utf8"));
+  const supported: Record<string, string> = { "PAYANT MIXTE": "Mixte", "PAYANT ROTATIF": "Rotatif", "GRATUIT": "Gratuit", "LIVRAISON": "ZL périodique" };
+  assert.ok(inventory.bays.length > 1000);
+  for (const bay of inventory.bays) {
+    assert.equal(supported[bay.sourceRegime], bay.sourceUse, bay.id);
+    assert.ok(Object.hasOwn(supported, bay.sourceRegime));
+  }
+});
 test("shared delivery bays must be eligible for the complete interval", () => {
   const cases: [string, string, boolean][] = [
     ["2026-09-14T19:59", "2026-09-14T22:00", false],

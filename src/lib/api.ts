@@ -52,7 +52,7 @@ export async function geocode(
 let inventoryPromise: Promise<Inventory> | null = null;
 export function getInventory() {
   return (inventoryPromise ??= fetchJSON<Inventory>(
-    `${import.meta.env.BASE_URL}data/parking.json`,
+    `${import.meta.env.BASE_URL}data/parking.json?v=${encodeURIComponent(import.meta.env.VITE_INVENTORY_VERSION)}`,
   ).catch((error) => {
     inventoryPromise = null;
     throw error;

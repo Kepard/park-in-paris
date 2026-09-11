@@ -27,6 +27,7 @@ export function PlaceInput({
   useEffect(() => {
     if (!open || text.length < 3 || text === value?.label) {
       setChoices([]);
+      setBusy(false);
       return;
     }
     const abort = new AbortController();

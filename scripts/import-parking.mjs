@@ -2,9 +2,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 const source =
   "https://opendata.paris.fr/api/explore/v2.1/catalog/datasets/stationnement-sur-voie-publique-emprises";
 const params = new URLSearchParams({
-  where: "regpar IN ('Mixte','Rotatif','Gratuit','ZL périodique')",
+  where: "(regpri='PAYANT MIXTE' AND regpar='Mixte') OR (regpri='PAYANT ROTATIF' AND regpar='Rotatif') OR (regpri='GRATUIT' AND regpar='Gratuit') OR (regpri='LIVRAISON' AND regpar='ZL périodique')",
   select:
-    "id,regpar,plarel,placal,typevoie,nomvoie,arrond,geo_point_2d,plage_hor1_debut,plage_hor1_fin,plage_hor2_debut,plage_hor2_fin,plage_hor3_debut,plage_hor3_fin",
+    "id,regpri,regpar,plarel,placal,typevoie,nomvoie,arrond,geo_point_2d,plage_hor1_debut,plage_hor1_fin,plage_hor2_debut,plage_hor2_fin,plage_hor3_debut,plage_hor3_fin",
   limit: "-1",
 });
 const response = await fetch(`${source}/exports/json?${params}`, {
@@ -13,6 +13,8 @@ const response = await fetch(`${source}/exports/json?${params}`, {
 if (!response.ok) throw new Error(`Paris dataset HTTP ${response.status}`);
 const rows = await response.json();
 const bays = rows.flatMap((r, index) => {
+  const supported = { "PAYANT MIXTE": "Mixte", "PAYANT ROTATIF": "Rotatif", "GRATUIT": "Gratuit", "LIVRAISON": "ZL périodique" };
+  if (supported[r.regpri] !== r.regpar) return [];
   const p = r.geo_point_2d;
   if (!p) return [];
   // Conservative woodland exclusion: includes a small boundary margin.
@@ -31,6 +33,8 @@ const bays = rows.flatMap((r, index) => {
   return [
     {
       id: `${r.id || "row"}-${index}`,
+      sourceRegime: r.regpri,
+      sourceUse: r.regpar,
       street,
       arrondissement: Number(r.arrond),
       coordinates: [Number(p.lon.toFixed(6)), Number(p.lat.toFixed(6))],
