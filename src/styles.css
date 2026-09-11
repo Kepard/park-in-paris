@@ -219,15 +219,18 @@ h1 {
 }
 .form-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 12px;
   margin: 20px 0 25px;
 }
 .form-row label {
+  min-width: 0;
   font-size: 12px;
   color: #7a847b;
 }
 .form-row input {
+  width: 100%;
+  min-width: 0;
   display: block;
   max-width: 100%;
   border: 0;
@@ -1431,8 +1434,9 @@ h1 {
     font-size: 16px;
   }
   .form-row input {
-    font-size: 12px;
+    font-size: 16px;
   }
+  .form-row { grid-template-columns: 1fr; }
   .survey-grid input,
   .survey-label input,
   .survey-label select,
