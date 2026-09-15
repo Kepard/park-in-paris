@@ -4,18 +4,23 @@ import { database } from "../server/db.js";
 import { tripSchema } from "../server/schema.js";
 
 const COOKIE = "pip_private_history";
-const allowedOrigins = new Set(["https://kepard.dev", "https://park-in-paris.vercel.app", ...(process.env.VERCEL_URL ? [`https://${process.env.VERCEL_URL}`] : []), ...(process.env.NODE_ENV !== "production" ? ["http://localhost:5173", "http://localhost:4173"] : [])]);
+const allowedOrigins = new Set(["https://parkinparis.kepard.dev", "https://kepard.dev", "https://park-in-paris.vercel.app", ...(process.env.VERCEL_URL ? [`https://${process.env.VERCEL_URL}`] : []), ...(process.env.NODE_ENV !== "production" ? ["http://localhost:5173", "http://localhost:4173"] : [])]);
 
 export default async function handler(req: IncomingMessage & { body?: unknown }, res: ServerResponse) {
   res.setHeader("Content-Type", "application/json");
   res.setHeader("Cache-Control", "private, no-store");
   res.setHeader("CDN-Cache-Control", "no-store");
   res.setHeader("Vercel-CDN-Cache-Control", "no-store");
-  res.setHeader("Vary", "Cookie");
+  res.setHeader("Vary", "Cookie, Origin");
   const respond = (status: number, value: unknown) => { res.statusCode = status; res.end(JSON.stringify(value)); };
   if (!["GET", "PUT", "DELETE"].includes(req.method || "")) { res.setHeader("Allow", "GET, PUT, DELETE"); return respond(405, { error: "Method not allowed" }); }
   if (req.headers["sec-fetch-site"] === "cross-site" || (req.headers.origin && !allowedOrigins.has(req.headers.origin))) return respond(403, { error: "Request origin not allowed" });
   if (req.method !== "GET" && req.headers["x-park-client"] !== "1") return respond(403, { error: "Missing request verification" });
+  // Only the new app may read the old host’s private history during migration.
+  if (req.method === "GET" && req.headers.origin === "https://parkinparis.kepard.dev") {
+    res.setHeader("Access-Control-Allow-Origin", req.headers.origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  }
   let token = (req.headers.cookie || "").split(";").map(s => s.trim()).find(s => s.startsWith(`${COOKIE}=`))?.slice(COOKIE.length + 1);
   const newHistory = !token || !/^[a-f0-9]{64}$/.test(token);
   if (newHistory) {
@@ -24,7 +29,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
   }
   if (req.method === "GET") {
     const secure = process.env.NODE_ENV === "production" || !!process.env.VERCEL ? "; Secure" : "";
-    res.setHeader("Set-Cookie", `${COOKIE}=${token}; HttpOnly${secure}; SameSite=Strict; Path=/projects/park-in-paris/; Max-Age=31536000`);
+    res.setHeader("Set-Cookie", `${COOKIE}=${token}; HttpOnly${secure}; SameSite=Strict; Path=/; Max-Age=31536000`);
   }
   const owner = createHash("sha256").update(token!).digest("hex");
   try {

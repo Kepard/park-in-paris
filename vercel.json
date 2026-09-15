@@ -4,8 +4,14 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/projects/park-in-paris/api/:path*", "destination": "/api/:path*" },
-    { "source": "/projects/park-in-paris/", "destination": "/index.html" },
+    {
+      "source": "/projects/park-in-paris/api/:path*",
+      "destination": "/api/:path*"
+    },
+    {
+      "source": "/projects/park-in-paris/",
+      "destination": "/index.html"
+    },
     {
       "source": "/projects/park-in-paris/assets/:path*",
       "destination": "/assets/:path*"
@@ -18,18 +24,27 @@
       "source": "/projects/park-in-paris/favicon.svg",
       "destination": "/favicon.svg"
     },
-    { "source": "/projects/park-in-paris/:path*", "destination": "/index.html" }
+    {
+      "source": "/projects/park-in-paris/:path*",
+      "destination": "/index.html"
+    }
   ],
   "headers": [
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
         {
           "key": "Referrer-Policy",
           "value": "strict-origin-when-cross-origin"
         },
-        { "key": "X-Frame-Options", "value": "DENY" }
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        }
       ]
     },
     {
@@ -40,6 +55,18 @@
           "value": "public, max-age=3600, stale-while-revalidate=86400"
         }
       ]
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/projects/park-in-paris",
+      "destination": "https://parkinparis.kepard.dev/",
+      "permanent": true
+    },
+    {
+      "source": "/projects/park-in-paris/",
+      "destination": "https://parkinparis.kepard.dev/",
+      "permanent": true
     }
   ]
 }

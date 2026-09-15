@@ -9,7 +9,7 @@ test("private server histories isolate browsers and retain completed feedback", 
   const server = createServer((req, res) => { void handler(req, res); });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address() as { port: number };
-  const url = process.env.TEST_API_URL || `http://127.0.0.1:${address.port}/projects/park-in-paris/api/trips`;
+  const url = process.env.TEST_API_URL || `http://127.0.0.1:${address.port}/api/trips`;
   const place = { label: "Storage integration test", coordinates: [2.33,48.87] as [number,number] };
   const route = { duration: 60, distance: 100, geometry: { type: "LineString" as const, coordinates: [place.coordinates, place.coordinates] } };
   const trip: SavedTrip = { id: randomUUID(), createdAt: new Date().toISOString(), status: "active", modelVersion: "integration-test", input: { origin: place, destination: place, departure: "2026-09-14T18:00", returnAt: "2026-09-14T22:00", maxWalk: 20, rushAllowance: false, useExperience: false }, candidate: { id: "test-bay", street: "Test street", arrondissement: 9, coordinates: place.coordinates, bays: [], capacity: 4, sharedCapacity: 0, drive: route, walk: route, driveMinutes: 1, walkMinutes: 1, searchLow: 2, searchHigh: 5, totalLow: 4, totalHigh: 7, total: 5.5, arrival: "2026-09-14T16:01:00.000Z", learnedFrom: 0, reason: "Test", parkingType: "paid" } };
@@ -20,6 +20,7 @@ test("private server histories isolate browsers and retain completed feedback", 
     assert.equal(a.status, 200);
     const setCookie = a.headers.get("set-cookie")!;
     assert.match(setCookie, /HttpOnly/); assert.match(setCookie, /SameSite=Strict/);
+    assert.match(setCookie, /Path=\/;/); assert.doesNotMatch(setCookie, /Domain=/i);
     cookie = setCookie.split(";")[0];
     assert.equal((await a.json()).newHistory, true);
     assert.equal((await (await send("GET")).json()).newHistory, false);
@@ -28,6 +29,12 @@ test("private server histories isolate browsers and retain completed feedback", 
     assert.notEqual(cookie, otherCookie);
     assert.equal((await send("PUT", trip)).status, 200);
     assert.equal((await (await send("GET")).json()).trips[0].id, trip.id);
+    const transfer = await fetch(url, { headers: { Cookie: cookie, Origin: "https://parkinparis.kepard.dev", "Sec-Fetch-Site": "same-site" } });
+    assert.equal(transfer.status, 200);
+    assert.equal(transfer.headers.get("access-control-allow-origin"), "https://parkinparis.kepard.dev");
+    assert.equal(transfer.headers.get("access-control-allow-credentials"), "true");
+    assert.equal((await transfer.json()).trips[0].id, trip.id);
+    assert.equal(a.headers.get("access-control-allow-origin"), null);
     assert.equal((await (await send("GET", undefined, otherCookie)).json()).trips.length, 0);
     assert.equal((await send("DELETE", undefined, otherCookie, `?id=${trip.id}`)).status, 200);
     assert.equal((await (await send("GET")).json()).trips.length, 1);
@@ -41,6 +48,7 @@ test("private server histories isolate browsers and retain completed feedback", 
     assert.equal((await send("PUT", trip, "")).status, 401);
     const crossSite = await fetch(url, { headers: { Cookie: cookie, Origin: "https://unrelated.example" } });
     assert.equal(crossSite.status, 403);
+    assert.equal(crossSite.headers.get("access-control-allow-origin"), null);
     assert.match(a.headers.get("cache-control")!, /no-store/);
     assert.equal((await send("DELETE", undefined, cookie, `?id=${trip.id}`)).status, 200);
     assert.equal((await send("PUT", finished)).status, 200);

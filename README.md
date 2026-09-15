@@ -2,7 +2,7 @@
 
 A small, animated street-parking planner. Compare driving, estimated searching and walking time; save a plan, open it in Waze or Google Maps, and record how parking went.
 
-Designed for https://kepard.dev/projects/park-in-paris/ and deployed on Vercel.
+Designed for https://parkinparis.kepard.dev/ and deployed on Vercel.
 
 ## Run
 
@@ -34,15 +34,17 @@ Choose **Use this parking plan** to start a trip. Finish it explicitly, or reope
 
 ## Private server history
 
-No login is needed. A 256-bit random identifier in a Secure, HttpOnly, SameSite cookie identifies this browser; the database stores its SHA-256 hash, never the cookie secret. All reads and writes are scoped to that identity, with no public listing. The cookie is restricted to the app path and renewed when used. Server responses are private and never cached.
+No login is needed. A 256-bit random identifier in a Secure, HttpOnly, SameSite cookie identifies this browser; the database stores its SHA-256 hash, never the cookie secret. All reads and writes are scoped to that identity, with no public listing. The cookie is host-only on the app subdomain, covers its root path and is renewed when used. Server responses are private and never cached.
 
 Existing local trips migrate automatically. The newest 100 trips and feedback are retained; a local cache and persistent outbox support offline changes and retries on reconnect, focus or manual retry. Supported browsers serialize synchronization across tabs with Web Locks. If the cookie is replaced but local records survive, those records are restored into the new private history. There is no account-based cross-device access; export before clearing all browser data or changing devices.
 
 Deletion removes trip content from the database and local cache. A minimal identifier-only deletion marker prevents a delayed upload from recreating the content. Old active-trip writes cannot overwrite completed feedback. Database setup is explicit and idempotent; it is not run on each request.
 
-## Hosting under the domain path
+## Hosting
 
-Vite's base is `/projects/park-in-paris/`. This app's `vercel.json` maps prefixed assets and data to the build output. The existing `kepard-home` Vercel project proxies only `/projects/park-in-paris` and its descendants to this project's deployment, preserving the prefix. Cloudflare DNS remains unchanged.
+The app runs at the root of `parkinparis.kepard.dev` on Vercel, with a DNS-only CNAME managed in Cloudflare. The old `kepard.dev/projects/park-in-paris/` page redirects to the new address. Legacy asset and API rewrites remain compatible with already-open tabs.
+
+On the new domain’s first visit, the app imports this browser’s server-saved trips from the old address. A credentialed, same-site GET is allowed only from the exact new origin; cookie secrets remain HttpOnly and host-only. Existing new-domain records and pending edits take priority, and imports pass through normal validation. A persistent migration marker prevents repeated imports; failed transfers retry on focus/reconnect. Old-origin offline changes need to have synced before moving.
 
 No secrets belong in this repository. No account or credential is needed to use the app.
 

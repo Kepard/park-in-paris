@@ -4,6 +4,7 @@ import { readTrips, saveTrips as cacheTrips } from "./storage";
 
 const OUTBOX = "park-in-paris.outbox.v1";
 const MIGRATED = "park-in-paris.server-migration.v1";
+const DOMAIN_MIGRATED = "park-in-paris.domain-migration.v1";
 type Change = { id: string; trip: SavedTrip | null; revision: string };
 function pending(): Change[] {
   try { const value = JSON.parse(localStorage.getItem(OUTBOX) || "[]"); return Array.isArray(value) ? value : []; } catch { return []; }
@@ -49,6 +50,22 @@ export function useTripStore() {
         enqueue(readTrips().filter(t => !alreadyPending.has(t.id)).map(trip => ({ id: trip.id, trip, revision: crypto.randomUUID() })));
         localStorage.setItem(MIGRATED, "1");
       }
+      let migrationFailed = false;
+      if (location.hostname === "parkinparis.kepard.dev" && !localStorage.getItem(DOMAIN_MIGRATED)) {
+        try {
+          // Same-site cookies identify this browser on the old host without exposing its secret.
+          const response = await fetch("https://kepard.dev/projects/park-in-paris/api/trips", {
+            credentials: "include", cache: "no-store", signal: AbortSignal.timeout(10000),
+          });
+          if (!response.ok) throw new Error("History transfer unavailable");
+          const legacy = await response.json();
+          if (!Array.isArray(legacy.trips)) throw new Error("Invalid history transfer");
+          const known = new Set([...initial.trips.map(t => t.id), ...pending().map(c => c.id)]);
+          enqueue((legacy.trips as SavedTrip[]).filter(t => !known.has(t.id)).map(trip => ({ id: trip.id, trip, revision: crypto.randomUUID() })));
+          // The outbox is durable before marking the import complete.
+          localStorage.setItem(DOMAIN_MIGRATED, "1");
+        } catch { migrationFailed = true; }
+      }
       for (let count = 0; count < 250; count++) {
         const change = pending().sort((a, b) => Number(!!a.trip) - Number(!!b.trip))[0];
         if (!change) break;
@@ -62,6 +79,7 @@ export function useTripStore() {
         cacheTrips(remote.trips); current.current = remote.trips;
         if (alive.current) { setTrips(remote.trips); setStatus("saved"); }
       }
+      if (migrationFailed) throw new Error("New trips are saved. Transferring history from the old address is unavailable; retry to recover it.");
       };
       // The lock also covers cookie creation, preventing two first-open tabs from creating competing histories.
       if (navigator.locks) await navigator.locks.request("park-in-paris-trip-sync", cycle);
