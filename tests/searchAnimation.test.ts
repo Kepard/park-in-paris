@@ -10,16 +10,16 @@ const at = (east: number, north = 0): Coordinate => [
 ];
 const trace = (id: string, coordinates: Coordinate[]): SearchTrace => ({ id, geometry: { type: "LineString", coordinates } });
 
-test("destination exploration reverses actual walks and crops the remote approach", () => {
+test("destination exploration follows actual walks inward and crops the remote approach", () => {
   const points = [at(1_500), at(400), at(400, 200), destination];
   const original = structuredClone(points);
   const result = destinationSearchTraces([trace("walk:street", points)], destination, 1_000);
   assert.equal(result.length, 1);
   const path = result[0].geometry.coordinates;
-  assert.deepEqual(path[0], destination);
-  assert.deepEqual(path[1], at(400, 200));
-  assert.deepEqual(path[2], at(400));
-  assert.ok(Math.abs(path.at(-1)![0] - at(1_000)[0]) < 1e-8);
+  assert.ok(Math.abs(path[0][0] - at(1_000)[0]) < 1e-8);
+  assert.deepEqual(path[1], at(400));
+  assert.deepEqual(path[2], at(400, 200));
+  assert.deepEqual(path.at(-1), destination);
   assert.deepEqual(points, original, "rendering must not mutate the saved route");
 });
 
@@ -31,22 +31,40 @@ test("local animation prioritizes walks instead of duplicating long drive-and-wa
   ], destination);
   assert.equal(result.length, 1);
   assert.equal(result[0].id, "local:walk:street:0");
-  assert.deepEqual(result[0].geometry.coordinates, [destination, at(500)]);
+  assert.deepEqual(result[0].geometry.coordinates, [at(500), destination]);
 });
 
-test("a route leaving and re-entering the local view is not joined by an invented street", () => {
+test("a route leaving and re-entering the local view keeps only its connected arrival leg", () => {
   const result = destinationSearchTraces([
     trace("walk:loop", [destination, at(2_000), at(2_000, 500), at(200, 500)]),
   ], destination, 1_000);
-  assert.equal(result.length, 2);
-  assert.ok(result[0].geometry.coordinates.at(-1)![1] < result[1].geometry.coordinates[0][1]);
-  assert.deepEqual(result[1].geometry.coordinates.at(-1), at(200, 500));
+  assert.equal(result.length, 1);
+  const path = result[0].geometry.coordinates;
+  assert.equal(path.length, 2, "do not join the earlier section with an invented street");
+  assert.ok(Math.abs(path[0][0] - at(1_000)[0]) < 1e-8);
+  assert.equal(path[0][1], destination[1]);
+  assert.deepEqual(path.at(-1), destination);
 });
 
 test("the direct route provides a local fallback while the first street is being routed", () => {
   const result = destinationSearchTraces([trace("direct", [at(-5_000), destination])], destination, 1_000);
   assert.equal(result.length, 1);
-  assert.deepEqual(result[0].geometry.coordinates[0], destination);
-  assert.ok(Math.abs(result[0].geometry.coordinates.at(-1)![0] - at(-1_000)[0]) < 1e-8);
+  assert.ok(Math.abs(result[0].geometry.coordinates[0][0] - at(-1_000)[0]) < 1e-8);
+  assert.deepEqual(result[0].geometry.coordinates.at(-1), destination);
   assert.deepEqual(destinationSearchTraces([trace("remote", [at(5_000), at(6_000)])], destination), []);
+});
+
+test("outward route geometry reverses without adding a connector to the destination marker", () => {
+  const snappedDestination = at(20, 10);
+  const points = [snappedDestination, at(150, 100), at(700, 100)];
+  const original = structuredClone(points);
+  const result = destinationSearchTraces([trace("walk:reversed", points)], destination, 1_000);
+  assert.deepEqual(result[0].geometry.coordinates, [...original].reverse());
+  assert.deepEqual(points, original, "reversing an incoming ray must not mutate its source route");
+});
+
+test("a crossing route with no local endpoint cannot masquerade as an arrival", () => {
+  assert.deepEqual(destinationSearchTraces([
+    trace("remote-crossing", [at(-2_000), at(2_000)]),
+  ], destination, 1_000), []);
 });

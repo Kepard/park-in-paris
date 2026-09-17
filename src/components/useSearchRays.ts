@@ -8,7 +8,7 @@ const COLORS = ["#315944", "#799d71", "#bdd879", "#4f8068", "#94b780", "#416751"
 const empty = () => ({ type: "FeatureCollection" as const, features: [] });
 const rgba = (hex: string, alpha: number) => `rgba(${parseInt(hex.slice(1, 3), 16)},${parseInt(hex.slice(3, 5), 16)},${parseInt(hex.slice(5, 7), 16)},${alpha})`;
 
-type Slot = { id: string; color: string; trace?: SearchTrace; started: number; cumulative: number[]; length: number };
+type Slot = { id: string; color: string; trace?: SearchTrace; started: number; travel: number; cumulative: number[]; length: number };
 
 // Interpolate only between consecutive vertices of the actual routed street polyline.
 function headPosition(slot: Slot, progress: number): Coordinate {
@@ -80,7 +80,7 @@ export function useSearchRays(
         layout: { "line-cap": "round", "line-join": "round" },
         paint: { "line-color": color, "line-width": local ? 4.5 : 4, "line-opacity": reduced ? 0 : .95 },
       });
-      return { id, color, started: 0, cumulative: [], length: 0 };
+      return { id, color, started: 0, travel: 0, cumulative: [], length: 0 };
     });
     map.addSource("search-ray-heads", { type: "geojson", data: empty() });
     map.addLayer({
@@ -102,20 +102,23 @@ export function useSearchRays(
           features: renderedPaths.map((trace) => ({ type: "Feature", properties: {}, geometry: trace.geometry })),
         });
       }
-      const visible = latest.current.filter((trace) => trace.geometry.coordinates.length > 1).slice(-slots.length);
+      const available = latest.current.filter((trace) => trace.geometry.coordinates.length > 1);
+      const visible = local ? available : available.slice(-slots.length);
       const visibleIds = new Set(visible.map((trace) => trace.id));
       for (const slot of slots) {
-        if (slot.trace && !visibleIds.has(slot.trace.id)) {
+        // Let an incoming ray reach the destination before replacing it with another nearby street.
+        const finished = !reduced && now >= slot.started + slot.travel + 900;
+        if (slot.trace && (local && !reduced ? finished : !visibleIds.has(slot.trace.id))) {
           slot.trace = undefined;
           (map.getSource(slot.id) as GeoJSONSource).setData(empty());
         }
       }
-      visible.forEach((trace, index) => {
-        if (slots.some((slot) => slot.trace?.id === trace.id)) return;
-        const slot = slots.find((slot) => !slot.trace);
-        if (!slot) return;
+      const pending = visible.filter((trace) => !slots.some((slot) => slot.trace?.id === trace.id));
+      slots.forEach((slot, index) => {
+        if (slot.trace || !pending.length) return;
+        const [trace] = pending.splice(local && !reduced ? Math.floor(Math.random() * pending.length) : 0, 1);
         slot.trace = trace;
-        slot.started = now + index * (local ? 105 : 55);
+        slot.started = now + (local ? Math.random() * 900 : index * 55);
         slot.cumulative = [0];
         slot.length = 0;
         const points = trace.geometry.coordinates;
@@ -125,17 +128,23 @@ export function useSearchRays(
           slot.length += Math.hypot((points[point][0] - points[point - 1][0]) * Math.PI / 180, mercatorY(points[point][1]) - mercatorY(points[point - 1][1]));
           slot.cumulative.push(slot.length);
         }
+        slot.travel = local ? Math.max(2300, Math.min(6200, slot.length * 6378137 * .658 / 210 * 1000)) : 3100 + index * 130;
         (map.getSource(slot.id) as GeoJSONSource).setData({ type: "Feature", properties: {}, geometry: trace.geometry });
       });
       if (reduced) return;
-      const heads = slots.flatMap((slot, index) => {
+      const heads = slots.flatMap((slot) => {
         if (!slot.trace) return [];
-        const elapsed = Math.max(0, now - slot.started);
-        // Local rays move at a similar ground speed, making junctions branch out as a wavefront.
-        const travel = local ? Math.max(2300, Math.min(6200, slot.length * 6378137 * .658 / 210 * 1000)) : 3100 + index * 130;
-        const reveal = Math.min(1, elapsed / travel);
-        const head = elapsed < travel ? reveal : ((elapsed - travel) % (travel + 900)) / travel;
+        const elapsed = now - slot.started;
         const clear = rgba(slot.color, 0);
+        if (elapsed < 0) {
+          const hidden = gradient([[0, clear], [1, clear]]);
+          for (const layer of [slot.id, `${slot.id}-bed`, `${slot.id}-glow`]) map.setPaintProperty(layer, "line-gradient", hidden);
+          return [];
+        }
+        // Nearby streets send staggered arrivals toward the destination along real route geometry.
+        const travel = slot.travel;
+        const reveal = Math.min(1, elapsed / travel);
+        const head = local ? elapsed / travel : elapsed < travel ? reveal : ((elapsed - travel) % (travel + 900)) / travel;
         const bed = gradient([[0, slot.color], [Math.max(.0001, reveal - .018), slot.color], [Math.max(.0002, reveal), clear], [1, clear]]);
         map.setPaintProperty(`${slot.id}-bed`, "line-gradient", reveal >= 1 ? ["interpolate", ["linear"], ["line-progress"], 0, slot.color, 1, slot.color] : bed);
         map.setPaintProperty(`${slot.id}-glow`, "line-gradient", gradient([[0, clear], [head - .32, clear], [head - .11, rgba(slot.color, .6)], [head - .018, slot.color], [head + .018, clear], [1, clear]]));

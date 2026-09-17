@@ -13,14 +13,15 @@ export function destinationSearchTraces(traces: SearchTrace[], destination: Coor
     const [x, y] = project(point);
     return x * x + y * y;
   };
-  // Pedestrian traces radiate from the destination and arrive before the longer car routes.
+  // Walking routes provide the local streets first, while longer car routes are still loading.
   const walking = traces.filter((trace) => trace.id.startsWith("walk:"));
   const source = walking.length ? walking : traces;
   return source.flatMap((trace) => {
     if (trace.geometry.coordinates.length < 2) return [];
     const original = trace.geometry.coordinates;
-    const coordinates = distanceSquared(original[0]) <= distanceSquared(original.at(-1)!)
+    const coordinates = distanceSquared(original[0]) >= distanceSquared(original.at(-1)!)
       ? original : [...original].reverse();
+    if (distanceSquared(coordinates.at(-1)!) > radius * radius) return [];
     const sections: Coordinate[][] = [];
     let section: Coordinate[] = [];
     for (let index = 1; index < coordinates.length; index++) {
@@ -58,9 +59,15 @@ export function destinationSearchTraces(traces: SearchTrace[], destination: Coor
       }
     }
     if (section.length > 1) sections.push(section);
-    return sections.map((points, index) => ({
-      id: `local:${trace.id}:${index}`,
-      geometry: { type: "LineString" as const, coordinates: points },
-    }));
+    // Keep only the connected arrival leg. Earlier sections can exit the local view,
+    // so animating those would make rays disappear at a crop boundary instead of arriving.
+    const arrival = sections.at(-1);
+    const endpoint = coordinates.at(-1)!;
+    const arrivalEnd = arrival?.at(-1);
+    if (!arrival || !arrivalEnd || Math.hypot(arrivalEnd[0] - endpoint[0], arrivalEnd[1] - endpoint[1]) > 1e-8) return [];
+    return [{
+      id: `local:${trace.id}:0`,
+      geometry: { type: "LineString" as const, coordinates: arrival },
+    }];
   });
 }
