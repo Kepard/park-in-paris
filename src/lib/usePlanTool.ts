@@ -21,7 +21,7 @@ export function usePlanTool(plan: Plan | null) {
     try {
       void Promise.resolve(context.registerTool({
         name: "read_parking_recommendations",
-        description: "Read the parking alternatives currently shown after a search, including provisional time ranges. Does not start or save a trip.",
+        description: "Read the parking search routes currently shown, including ordered streets, mapped space counts and provisional door-to-door time ranges. Does not start or save a trip.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
         annotations: { readOnlyHint: true, untrustedContentHint: true },
         execute(input) {
@@ -36,6 +36,26 @@ export function usePlanTool(plan: Plan | null) {
               driveMinutes: c.driveMinutes, walkMinutes: c.walkMinutes,
               searchRangeMinutes: [c.searchLow, c.searchHigh],
               totalRangeMinutes: [c.totalLow, c.totalHigh], mappedCapacity: c.capacity,
+              searchRoute: c.searchRoute ? {
+                mappedCapacity: c.searchRoute.capacity,
+                extraDriveMinutes: c.searchRoute.extraDriveMinutes,
+                totalRangeMinutes: [c.searchRoute.totalLow, c.searchRoute.totalHigh],
+                stops: c.searchRoute.stops.map((stop, index) => ({
+                  order: index + 1,
+                  id: stop.id,
+                  street: stop.street,
+                  coordinates: stop.coordinates,
+                  mappedCapacity: stop.capacity,
+                  walkMinutes: stop.walkMinutes,
+                  driveFromPreviousMinutes: stop.driveFromPrevious
+                    ? (stop.driveFromPrevious.duration / 60) * (c.drive.duration > 0
+                      ? c.driveMinutes / (c.drive.duration / 60)
+                      : 1)
+                    : null,
+                  arrivalRange: [stop.arrivalLow, stop.arrivalHigh],
+                  totalRangeMinutes: [stop.totalLow, stop.totalHigh],
+                })),
+              } : null,
             })),
           };
         },

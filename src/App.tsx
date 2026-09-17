@@ -27,6 +27,7 @@ import { PlaceInput } from "./components/PlaceInput";
 import { MapView } from "./components/MapView";
 import { Modal } from "./components/Modal";
 import { SurveyForm } from "./components/SurveyForm";
+import { SearchRouteDetails } from "./components/SearchRouteDetails";
 import { GARNIER, MONTREUIL, navigationURL, streetViewURL } from "./lib/api";
 import { defaultTimes, parseParis } from "./lib/rules";
 import { planTrip } from "./lib/planner";
@@ -35,12 +36,6 @@ import { useTripStore } from "./lib/useTripStore";
 import { usePlanTool } from "./lib/usePlanTool";
 import type { Place, Plan, SavedTrip, Survey, TripInput, SearchTrace } from "./types";
 
-const formatTime = (iso: string) =>
-  new Intl.DateTimeFormat("en-GB", {
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "Europe/Paris",
-  }).format(new Date(iso));
 const formatDate = (iso: string) =>
   new Intl.DateTimeFormat("en-GB", {
     day: "numeric",
@@ -68,6 +63,8 @@ export default function App() {
   const [plan, setPlan] = useState<Plan | null>(null),
     [traces, setTraces] = useState<SearchTrace[]>([]),
     [selected, setSelected] = useState(0),
+    [selectedStop, setSelectedStop] = useState(0),
+    [focusRequest, setFocusRequest] = useState(0),
     [searching, setSearching] = useState(false),
     [stage, setStage] = useState("Reading the Paris parking inventory"),
     [progress, setProgress] = useState(0),
@@ -84,11 +81,17 @@ export default function App() {
     reduceMotion = useReducedMotion();
   const active = trips.find((t) => t.status === "active"),
     surveyTrip = trips.find((t) => t.id === surveyId),
-    candidate = plan?.candidates[selected];
-  const selectCandidate = useCallback(
-    (index: number) => setSelected(index),
-    [],
-  );
+    candidate = plan?.candidates[selected],
+    focusedStreet = candidate?.searchRoute?.stops[selectedStop] ?? candidate;
+  const revealMap = useCallback(() => {
+    if (innerWidth <= 760) window.scrollTo({ top: 0, behavior: reduceMotion ? "instant" : "smooth" });
+  }, [reduceMotion]);
+  const selectCandidate = useCallback((index: number) => {
+    setSelected(index); setSelectedStop(0); setFocusRequest(n => n + 1); revealMap();
+  }, [revealMap]);
+  const selectStop = useCallback((index: number) => {
+    setSelectedStop(index); setFocusRequest(n => n + 1); revealMap();
+  }, [revealMap]);
   usePlanTool(tab === "results" ? plan : null);
   useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => {
@@ -174,6 +177,7 @@ export default function App() {
       if (controller.signal.aborted) return;
       setPlan(result);
       setSelected(0);
+      setSelectedStop(0);
       setProgress(100);
       setTab("results");
     } catch (e) {
@@ -233,6 +237,9 @@ export default function App() {
         plan={tab === "results" ? plan : null}
         selected={selected}
         onSelect={selectCandidate}
+        selectedStop={selectedStop}
+        onSelectStop={selectStop}
+        focusRequest={focusRequest}
         destination={destination}
         origin={origin}
         searching={searching}
@@ -455,11 +462,9 @@ export default function App() {
                 <ArrowLeft size={16} />
                 Adjust your trip
               </button>
-              <div className="eyebrow result-eyebrow">YOUR BEST ARRIVALS</div>
+              <div className="eyebrow result-eyebrow">A FEW STREETS. ONE SIMPLE PLAN.</div>
               <h1 className="result-title">
-                A good place{" "}
-                <br />
-                to start.
+                A good place to start.
               </h1>
               <p className="result-destination">
                 <MapPin size={15} />
@@ -467,21 +472,21 @@ export default function App() {
               </p>
               <div className="estimate-label">
                 <Info size={13} />
-                Parking estimates · no live occupancy
+                Choose a starting street · tap to explore its spaces
               </div>
               <div className="result-list">
                 {plan.candidates.map((c, index) => (
                   <button
                     className={`result-card ${selected === index ? "is-selected" : ""}`}
                     key={c.id}
-                    onClick={() => setSelected(index)}
+                    onClick={() => selectCandidate(index)}
                     aria-pressed={selected === index}
                   >
                     <div className="result-top">
                       <span className="result-number">0{index + 1}</span>
                       <span className="result-street">
                         {c.street}
-                        <small>{c.arrondissement}e arrondissement</small>
+                        <small>{c.arrondissement}e arrondissement · {(c.searchRoute?.stops.length ?? 0) > 1 ? `${c.searchRoute!.stops.length - 1} backup ${c.searchRoute!.stops.length === 2 ? "street" : "streets"}` : "starting street"}</small>
                       </span>
                       {index === 0 ? (
                         <span className="best-tag">BEST BALANCE</span>
@@ -489,16 +494,12 @@ export default function App() {
                     </div>
                     <div className="result-timing">
                       <strong>
-                        {Math.round(c.total)}
-                        <small> min</small>
+                        {c.capacity}
                       </strong>
                       <span>
-                        estimated total
+                        mapped spaces
                         <br />
-                        <b>
-                          {Math.floor(c.totalLow)}–{Math.ceil(c.totalHigh)} min
-                          scenario range
-                        </b>
+                        <b>on this street · tap to look closer</b>
                       </span>
                       <span className="selection-circle">
                         {selected === index ? <Check size={13} /> : null}
@@ -521,34 +522,15 @@ export default function App() {
                   </button>
                 ))}
               </div>
+              <SearchRouteDetails candidate={candidate} selectedStop={selectedStop} onSelectStop={selectStop} destination={plan.input.destination} origin={plan.input.origin} />
               <div className="selected-detail">
-                <p>{candidate.reason}</p>
-                <span>
-                  <CircleParking size={14} />
-                  {candidate.capacity} mapped spaces ·{" "}
-                  {candidate.parkingType === "paid"
-                    ? "paid parking"
-                    : candidate.parkingType === "mixed"
-                      ? "mixed parking"
-                      : "eligible free / shared bays"}
-                </span>
-                {candidate.sharedCapacity ? (
-                  <span>
-                    {candidate.sharedCapacity} shared delivery spaces eligible
-                    for this stay.
-                  </span>
-                ) : null}
-                {candidate.learnedFrom ? (
-                  <span>
-                    <Sparkles size={13} />
-                    Adjusted using {candidate.learnedFrom} of your previous
-                    trips.
-                  </span>
-                ) : null}
+                <span><CircleParking size={14} />{focusedStreet?.street} · {focusedStreet?.parkingType === "paid" ? "paid parking" : focusedStreet?.parkingType === "mixed" ? "mixed parking" : "eligible free / shared bays"}</span>
+                {focusedStreet?.sharedCapacity ? <span>{focusedStreet.sharedCapacity} shared delivery spaces eligible for this stay.</span> : null}
+                {candidate.learnedFrom ? <span><Sparkles size={13} />Adjusted using {candidate.learnedFrom} similar first-street visits.</span> : null}
               </div>
               <div className="navigation-buttons">
                 <a
-                  href={navigationURL("waze", candidate.coordinates)}
+                  href={navigationURL("waze", focusedStreet!.coordinates)}
                   target="_blank"
                   rel="noopener noreferrer"
                 >
@@ -559,8 +541,8 @@ export default function App() {
                 <a
                   href={navigationURL(
                     "google",
-                    candidate.coordinates,
-                    plan.input.origin.coordinates,
+                    focusedStreet!.coordinates,
+                    selectedStop > 0 ? candidate.searchRoute?.stops[selectedStop - 1]?.coordinates : plan.input.origin.coordinates,
                   )}
                   target="_blank"
                   rel="noopener noreferrer"
@@ -571,10 +553,10 @@ export default function App() {
                 </a>
               </div>
               <p className="nav-caption">
-                Driving directions to the start of your search area.
+                Directions to {focusedStreet?.street}{selectedStop > 0 ? " · backup street" : " · start here"}.
               </p>
-              <a className="street-view-link" href={streetViewURL(candidate.coordinates)} target="_blank" rel="noopener noreferrer">
-                <ScanEye size={18} /> Preview {candidate.street} in Street View <ArrowUpRight size={16} />
+              <a className="street-view-link" href={streetViewURL(focusedStreet!.coordinates)} target="_blank" rel="noopener noreferrer">
+                <ScanEye size={18} /> Preview {focusedStreet?.street} in Street View <ArrowUpRight size={16} />
               </a>
               <button
                 className="primary-button"
@@ -589,7 +571,7 @@ export default function App() {
                 href={navigationURL(
                   "google",
                   plan.input.destination.coordinates,
-                  candidate.coordinates,
+                  focusedStreet!.coordinates,
                   true,
                 )}
                 target="_blank"
@@ -623,17 +605,18 @@ export default function App() {
             className="search-display"
             role="status"
             aria-live="polite"
-            initial={{ opacity: 0, scale: 0.96 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 1.03 }}
+            initial={reduceMotion ? false : { opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={reduceMotion ? undefined : { opacity: 0, y: -6 }}
           >
-            <div className="ray-legend" aria-hidden="true"><span /><span /><span /><span /></div>
-            <h2>Following the possibilities.</h2>
+            <div className="search-heading"><span className="search-sigil" aria-hidden="true"><Route size={20} /></span><span className="eyebrow">A LITTLE EXPLORING</span><span className="search-percent" aria-hidden="true">{progress}%</span></div>
+            <h2>Finding your way to a space.</h2>
             <p>{stage}</p>
-            <div className="search-progress" aria-hidden="true">
+            <div className="search-progress" role="progressbar" aria-label="Parking search progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
               <span style={{ width: `${Math.max(5, progress)}%` }} />
             </div>
-            <small>Real routes, traced as we compare your options.</small>
+            <div className="search-phases" aria-hidden="true"><span className={progress >= 6 ? "reached" : ""}>Map spaces</span><span className={progress >= 30 ? "reached" : ""}>Compare walks</span><span className={progress >= 88 ? "reached" : ""}>Link streets</span></div>
+            <small>Following real roads. Keeping your walk in reach.</small>
           </motion.div>
         ) : null}
       </AnimatePresence>
@@ -649,12 +632,12 @@ export default function App() {
           <div>
             <strong>
               {candidate && tab === "results"
-                ? `Start looking near ${candidate.street}`
+                ? `Explore ${focusedStreet?.street}`
                 : "A city of possibilities."}
             </strong>
             <span>
               {candidate && tab === "results"
-                ? `Reach the area around ${formatTime(candidate.arrival)} · then ${Math.ceil(candidate.walkMinutes)} min on foot`
+                ? `Mapped parking sections · ${Math.ceil(focusedStreet?.walkMinutes ?? candidate.walkMinutes)} min on foot to your destination`
                 : "Pick a destination. We’ll take it from here."}
             </span>
           </div>
@@ -666,13 +649,22 @@ export default function App() {
             <p>
               <strong>Mapped supply, estimated availability.</strong> We rank
               compact street areas by driving, estimated search, and walking
-              time. A mapped space may already be occupied.
+              time, then link up to three nearby backup streets using actual
+              driving routes. Each counted parking section stays within your
+              walking limit. A mapped space may already be occupied.
             </p>
             <p>
               <strong>Open routing.</strong> Driving and walking routes come
               from IGN’s BD TOPO / OSRM service. When enabled, a simple 10–35%
               time-of-day allowance is added to driving. This is a planning
               assumption, not live or measured historical traffic.
+            </p>
+            <p>
+              <strong>A short search route.</strong> Start with the first street,
+              then follow the backups only if needed. The arrival range includes
+              searching earlier streets and driving between them. It describes
+              quick through longer searches, not a guaranteed arrival or a
+              probability of finding a space.
             </p>
             <p>
               <strong>An early parking model.</strong> Search scenarios use
@@ -757,7 +749,8 @@ export default function App() {
                       <time>{formatDate(t.createdAt)}</time>
                     </div>
                     <h3>{t.input.destination.label.split(" · ")[0]}</h3>
-                    <p>{t.candidate.street}</p>
+                    <p>{t.candidate.searchRoute ? "Started at " : ""}{t.candidate.street}</p>
+                    {t.candidate.searchRoute && !t.survey ? <SearchRouteDetails candidate={t.candidate} selectedStop={0} destination={t.input.destination} origin={t.input.origin} compact /> : null}
                     {t.survey ? (
                       <div className="trip-feedback">
                         <CheckCircle2 size={15} />
@@ -765,11 +758,11 @@ export default function App() {
                           ? `Stopped after ${t.survey.searchMinutes} min`
                           : t.survey.outcome === "elsewhere"
                             ? `Parked elsewhere · ${t.survey.searchMinutes} min search`
-                            : `Found parking · ${t.survey.searchMinutes} min search`}
+                            : `Parked on ${t.survey.actualStreet || t.candidate.street} · ${t.survey.searchMinutes} min search`}
                       </div>
                     ) : (
                       <>
-                        <div className="navigation-buttons">
+                        {!t.candidate.searchRoute ? <div className="navigation-buttons">
                           <a
                             href={navigationURL(
                               "waze",
@@ -793,7 +786,7 @@ export default function App() {
                             Google Maps
                             <ExternalLink size={12} />
                           </a>
-                        </div>
+                        </div> : null}
                         <button
                           className="text-button"
                           onClick={() => {

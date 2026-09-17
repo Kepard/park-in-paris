@@ -34,6 +34,32 @@ export type RouteData = {
   geometry: { type: "LineString"; coordinates: Coordinate[] };
 };
 export type SearchTrace = { id: string; geometry: RouteData["geometry"] };
+export type SearchStop = {
+  id: string;
+  street: string;
+  arrondissement: number;
+  coordinates: Coordinate;
+  bays: Bay[];
+  capacity: number;
+  sharedCapacity: number;
+  walk: RouteData;
+  walkMinutes: number;
+  parkingType: "paid" | "free" | "mixed";
+  /** Directed car route from the previous stop; absent on the first street. */
+  driveFromPrevious?: RouteData;
+  arrivalLow: string;
+  arrivalHigh: string;
+  totalLow: number;
+  totalHigh: number;
+};
+export type SearchRoute = {
+  stops: SearchStop[];
+  capacity: number;
+  extraDriveMinutes: number;
+  /** Scenario range, not a confidence interval or a guarantee of a space. */
+  totalLow: number;
+  totalHigh: number;
+};
 export type Candidate = {
   id: string;
   street: string;
@@ -55,6 +81,7 @@ export type Candidate = {
   learnedFrom: number;
   reason: string;
   parkingType: "paid" | "free" | "mixed";
+  searchRoute?: SearchRoute;
 };
 export type Plan = {
   input: TripInput;
@@ -74,6 +101,7 @@ export type Survey = {
   submittedAt: string;
   actualStreet: string;
   observedArrival: string;
+  parkedStopId?: string;
 };
 export type SavedTrip = {
   id: string;

@@ -13,6 +13,8 @@ test("private server histories isolate browsers and retain completed feedback", 
   const place = { label: "Storage integration test", coordinates: [2.33,48.87] as [number,number] };
   const route = { duration: 60, distance: 100, geometry: { type: "LineString" as const, coordinates: [place.coordinates, place.coordinates] } };
   const trip: SavedTrip = { id: randomUUID(), createdAt: new Date().toISOString(), status: "active", modelVersion: "integration-test", input: { origin: place, destination: place, departure: "2026-09-14T18:00", returnAt: "2026-09-14T22:00", maxWalk: 20, rushAllowance: false, useExperience: false }, candidate: { id: "test-bay", street: "Test street", arrondissement: 9, coordinates: place.coordinates, bays: [], capacity: 4, sharedCapacity: 0, drive: route, walk: route, driveMinutes: 1, walkMinutes: 1, searchLow: 2, searchHigh: 5, totalLow: 4, totalHigh: 7, total: 5.5, arrival: "2026-09-14T16:01:00.000Z", learnedFrom: 0, reason: "Test", parkingType: "paid" } };
+  const stop = { id: trip.candidate.id, street: trip.candidate.street, arrondissement: 9, coordinates: place.coordinates, bays: [], capacity: 4, sharedCapacity: 0, walk: route, walkMinutes: 1, parkingType: "paid" as const, arrivalLow: trip.candidate.arrival, arrivalHigh: trip.candidate.arrival, totalLow: 4, totalHigh: 7 };
+  trip.candidate.searchRoute = { stops: [stop, { ...stop, id: "test-backup", street: "Backup street", driveFromPrevious: route, arrivalLow: "2026-09-14T16:07:00.000Z", arrivalHigh: "2026-09-14T16:07:00.000Z", totalLow: 9, totalHigh: 12 }], capacity: 8, extraDriveMinutes: 1, totalLow: 4, totalHigh: 12 };
   let cookie = "";
   const send = (method: string, data?: unknown, auth = cookie, suffix = "") => fetch(url + suffix, { method, headers: { Cookie: auth, "Content-Type": "application/json", "X-Park-Client": "1", Origin: "https://kepard.dev" }, ...(data ? { body: JSON.stringify(data) } : {}) });
   try {
@@ -28,7 +30,9 @@ test("private server histories isolate browsers and retain completed feedback", 
     const otherCookie = b.headers.get("set-cookie")!.split(";")[0];
     assert.notEqual(cookie, otherCookie);
     assert.equal((await send("PUT", trip)).status, 200);
-    assert.equal((await (await send("GET")).json()).trips[0].id, trip.id);
+    const savedRouteTrip = (await (await send("GET")).json()).trips[0];
+    assert.equal(savedRouteTrip.id, trip.id);
+    assert.deepEqual(savedRouteTrip.candidate.searchRoute, trip.candidate.searchRoute);
     const transfer = await fetch(url, { headers: { Cookie: cookie, Origin: "https://parkinparis.kepard.dev", "Sec-Fetch-Site": "same-site" } });
     assert.equal(transfer.status, 200);
     assert.equal(transfer.headers.get("access-control-allow-origin"), "https://parkinparis.kepard.dev");
@@ -38,11 +42,13 @@ test("private server histories isolate browsers and retain completed feedback", 
     assert.equal((await (await send("GET", undefined, otherCookie)).json()).trips.length, 0);
     assert.equal((await send("DELETE", undefined, otherCookie, `?id=${trip.id}`)).status, 200);
     assert.equal((await (await send("GET")).json()).trips.length, 1);
-    const finished = { ...trip, status: "completed", completedAt: new Date().toISOString(), survey: { outcome: "gave-up", searchMinutes: 12, streetsTried: 3, bayType: "ordinary", note: "Integration test", submittedAt: new Date().toISOString(), actualStreet: "", observedArrival: "2026-09-07T16:00:00.000Z" } };
+    const finished = { ...trip, status: "completed", completedAt: new Date().toISOString(), survey: { outcome: "here", searchMinutes: 12, streetsTried: 2, bayType: "ordinary", note: "Integration test", submittedAt: new Date().toISOString(), actualStreet: "Backup street", parkedStopId: "test-backup", observedArrival: "2026-09-07T16:00:00.000Z" } };
     assert.equal((await send("PUT", finished)).status, 200);
     assert.equal((await send("PUT", trip)).status, 200);
     const stored = (await (await send("GET")).json()).trips[0];
-    assert.equal(stored.status, "completed"); assert.equal(stored.survey.outcome, "gave-up");
+    assert.equal(stored.status, "completed"); assert.equal(stored.survey.outcome, "here");
+    assert.equal(stored.survey.parkedStopId, "test-backup");
+    assert.equal(stored.survey.actualStreet, "Backup street");
     assert.equal((await send("PUT", { ...trip, id: "not-an-id" })).status, 400);
     assert.equal((await send("PUT", { ...trip, input: { ...trip.input, returnAt: "2026-02-30T12:00" } })).status, 400);
     assert.equal((await send("PUT", trip, "")).status, 401);

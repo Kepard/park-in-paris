@@ -24,14 +24,21 @@ export function SurveyForm({
     [bayType, setBayType] = useState<Survey["bayType"]>("ordinary"),
     [note, setNote] = useState(""),
     [actualStreet, setActualStreet] = useState(""),
+    [parkedStopId, setParkedStopId] = useState(""),
     [observedArrival, setObservedArrival] = useState(
       parisInput(new Date(trip.candidate.arrival)),
     ),
     [error, setError] = useState("");
+  const routeStops = trip.candidate.searchRoute?.stops;
   function submit(e: React.SubmitEvent) {
     e.preventDefault();
     try {
       if (!outcome) throw new Error("Choose how your parking search ended.");
+      const parkedStop = outcome === "here"
+        ? routeStops?.find((stop) => stop.id === parkedStopId)
+        : undefined;
+      if (outcome === "here" && routeStops?.length && !parkedStop)
+        throw new Error("Choose the suggested street where you found a space.");
       if (
         minutes.trim() === "" ||
         !Number.isFinite(Number(minutes)) ||
@@ -56,7 +63,10 @@ export function SurveyForm({
         note: note.trim().slice(0, 500),
         submittedAt: new Date().toISOString(),
         actualStreet:
-          outcome === "here" ? trip.candidate.street : actualStreet.trim(),
+          outcome === "here"
+            ? parkedStop?.street ?? trip.candidate.street
+            : actualStreet.trim(),
+        ...(parkedStop ? { parkedStopId: parkedStop.id } : {}),
         observedArrival: arrival.toISOString(),
       });
     } catch (e) {
@@ -75,7 +85,10 @@ export function SurveyForm({
           <strong>Better parking estimates later.</strong>
         </p>
       </div>
-      <p className="survey-street">Your plan: {trip.candidate.street}</p>
+      <p className="survey-street">
+        Your plan: {trip.candidate.street}
+        {routeStops && routeStops.length > 1 ? ` + ${routeStops.length - 1} nearby streets` : ""}
+      </p>
       <form onSubmit={submit}>
         <fieldset className="outcome-options">
           <legend>Where did you end up?</legend>
@@ -83,7 +96,7 @@ export function SurveyForm({
             [
               {
                 value: "here",
-                label: "Parked in this area",
+                label: routeStops?.length ? "On a suggested street" : "On the suggested street",
                 icon: CheckCircle2,
               },
               {
@@ -111,6 +124,22 @@ export function SurveyForm({
             </label>
           ))}
         </fieldset>
+        {outcome === "here" && routeStops?.length ? (
+          <label className="survey-label">
+            Which street had a space?
+            <select
+              required
+              value={parkedStopId}
+              onChange={(event) => setParkedStopId(event.target.value)}
+            >
+              <option value="" disabled>Choose the street where you parked</option>
+              {routeStops.map((stop, index) => (
+                <option key={stop.id} value={stop.id}>{index + 1}. {stop.street}</option>
+              ))}
+            </select>
+            <span>This helps us learn from the right street.</span>
+          </label>
+        ) : null}
         <div className="survey-grid">
           <label>
             Time spent searching <span>minutes</span>
@@ -191,7 +220,7 @@ export function SurveyForm({
           Save my experience <Check size={19} />
         </button>
         <p className="privacy-note">
-          Saved on this device. Export your trips any time.
+          Saved privately on the server, linked to this browser. Export your trips any time.
         </p>
       </form>
     </Modal>

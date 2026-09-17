@@ -1,57 +1,146 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
-import type { Map, GeoJSONSource } from "maplibre-gl";
-import type { SearchTrace } from "../types";
+import type { Map, GeoJSONSource, ExpressionSpecification } from "maplibre-gl";
+import type { Coordinate, SearchTrace } from "../types";
 
-const COLORS = ["#00a6c7", "#f08d35", "#9363ef", "#40b87b", "#e85995", "#2e8cfa", "#e9b62f", "#59bfb7"];
+const COLORS = ["#315944", "#799d71", "#bdd879", "#4f8068", "#94b780", "#416751", "#b0ce77", "#67967e"];
 const empty = () => ({ type: "FeatureCollection" as const, features: [] });
+const rgba = (hex: string, alpha: number) => `rgba(${parseInt(hex.slice(1, 3), 16)},${parseInt(hex.slice(3, 5), 16)},${parseInt(hex.slice(5, 7), 16)},${alpha})`;
+
+type Slot = { id: string; color: string; trace?: SearchTrace; started: number; cumulative: number[]; length: number };
+
+// Interpolate only between consecutive vertices of the actual routed street polyline.
+function headPosition(slot: Slot, progress: number): Coordinate {
+  const coordinates = slot.trace!.geometry.coordinates;
+  const distance = slot.length * Math.min(1, Math.max(0, progress));
+  let index = 1;
+  while (index < slot.cumulative.length - 1 && slot.cumulative[index] < distance) index++;
+  const from = coordinates[index - 1];
+  const to = coordinates[index];
+  const fraction = (distance - slot.cumulative[index - 1]) / (slot.cumulative[index] - slot.cumulative[index - 1] || 1);
+  return [from[0] + (to[0] - from[0]) * fraction, from[1] + (to[1] - from[1]) * fraction];
+}
+
+function gradient(points: [number, string][]): ExpressionSpecification {
+  const stops: (string | number)[] = [];
+  // MapLibre requires strictly increasing stops, including at the ends of a pulse.
+  for (const [position, color] of points) {
+    const bounded = Math.max(0, Math.min(1, position));
+    if (stops.length && bounded <= Number(stops[stops.length - 2])) continue;
+    stops.push(bounded, color);
+  }
+  if (stops.length === 2) stops.push(1, stops[1]);
+  return ["interpolate", ["linear"], ["line-progress"], ...stops] as ExpressionSpecification;
+}
 
 export function useSearchRays(mapRef: RefObject<Map | null>, ready: boolean, active: boolean, traces: SearchTrace[]) {
   const latest = useRef(traces);
   latest.current = traces;
+  const redraw = useRef<((now: number) => void) | null>(null);
+  const [reduced, setReduced] = useState(() => matchMedia("(prefers-reduced-motion: reduce)").matches);
+  useEffect(() => {
+    const media = matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setReduced(media.matches);
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready || !active) return;
-    const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const slots = COLORS.map((color, i) => {
-      const id = `search-ray-${i}`;
+    const slots: Slot[] = COLORS.map((color, index) => {
+      const id = `search-ray-${index}`;
       map.addSource(id, { type: "geojson", lineMetrics: true, data: empty() });
-      map.addLayer({ id: `${id}-bed`, type: "line", source: id, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": color, "line-width": 7, "line-opacity": .07, "line-blur": 1 } });
-      map.addLayer({ id, type: "line", source: id, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": color, "line-width": 4.5, "line-opacity": reduced ? .7 : 1 } });
-      return { id, color, traceId: "" };
+      map.addLayer({
+        id: `${id}-glow`, type: "line", source: id,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": color, "line-width": 12, "line-opacity": .12, "line-blur": 5 },
+      });
+      map.addLayer({
+        id: `${id}-bed`, type: "line", source: id,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": color, "line-width": 2.5, "line-opacity": reduced ? .75 : .25 },
+      });
+      map.addLayer({
+        id, type: "line", source: id,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": color, "line-width": 4, "line-opacity": reduced ? 0 : .95 },
+      });
+      return { id, color, started: 0, cumulative: [], length: 0 };
     });
-    let frame = 0, previous = 0;
-    const started = performance.now();
+    map.addSource("search-ray-heads", { type: "geojson", data: empty() });
+    map.addLayer({
+      id: "search-ray-heads-glow", type: "circle", source: "search-ray-heads",
+      paint: { "circle-radius": 14, "circle-color": ["get", "color"], "circle-blur": .9, "circle-opacity": .4 },
+    });
+    map.addLayer({
+      id: "search-ray-heads", type: "circle", source: "search-ray-heads",
+      paint: { "circle-radius": 3.4, "circle-color": "#f1ffcd", "circle-stroke-color": ["get", "color"], "circle-stroke-width": 1.6 },
+    });
+    let frame = 0;
+    let previous = 0;
     const draw = (now: number) => {
-      if (now - previous >= 40) {
-        previous = now;
-        const visible = latest.current.slice(-COLORS.length);
-        slots.forEach((slot, i) => {
-          const trace = visible[i];
-          if (!trace) return;
-          if (slot.traceId !== trace.id) {
-            (map.getSource(slot.id) as GeoJSONSource).setData({ type: "Feature", properties: {}, geometry: trace.geometry });
-            slot.traceId = trace.id;
-          }
-          if (reduced) return;
-          // Each pulse advances along the routed polyline; its transparent tail never cuts across blocks.
-          const head = (((now - started) / (5400 + i * 230) + i * .12) % 1) * 1.26;
-          const start = Math.max(0, Math.min(.999, head - .26));
-          const bright = Math.max(start + .0001, Math.min(.9994, head - .04));
-          const end = Math.max(bright + .0001, Math.min(1, head));
-          map.setPaintProperty(slot.id, "line-gradient", ["interpolate", ["linear"], ["line-progress"], start, "rgba(255,255,255,0)", bright, slot.color, end, "rgba(255,255,255,0)"]);
-        });
+      const visible = latest.current.filter((trace) => trace.geometry.coordinates.length > 1).slice(-COLORS.length);
+      const visibleIds = new Set(visible.map((trace) => trace.id));
+      for (const slot of slots) {
+        if (slot.trace && !visibleIds.has(slot.trace.id)) {
+          slot.trace = undefined;
+          (map.getSource(slot.id) as GeoJSONSource).setData(empty());
+        }
       }
-      frame = requestAnimationFrame(draw);
+      visible.forEach((trace, index) => {
+        if (slots.some((slot) => slot.trace?.id === trace.id)) return;
+        const slot = slots.find((slot) => !slot.trace);
+        if (!slot) return;
+        slot.trace = trace;
+        slot.started = now + index * 55;
+        slot.cumulative = [0];
+        slot.length = 0;
+        const points = trace.geometry.coordinates;
+        for (let point = 1; point < points.length; point++) {
+          // The same Mercator distances used by MapLibre's line-progress keep heads on their trails.
+          const mercatorY = (latitude: number) => Math.log(Math.tan(Math.PI / 4 + latitude * Math.PI / 360));
+          slot.length += Math.hypot((points[point][0] - points[point - 1][0]) * Math.PI / 180, mercatorY(points[point][1]) - mercatorY(points[point - 1][1]));
+          slot.cumulative.push(slot.length);
+        }
+        (map.getSource(slot.id) as GeoJSONSource).setData({ type: "Feature", properties: {}, geometry: trace.geometry });
+      });
+      if (reduced) return;
+      const heads = slots.flatMap((slot, index) => {
+        if (!slot.trace) return [];
+        const elapsed = Math.max(0, now - slot.started);
+        const travel = 3100 + index * 130;
+        const reveal = Math.min(1, elapsed / travel);
+        const head = elapsed < travel ? reveal : ((elapsed - travel) % (travel + 900)) / travel;
+        const clear = rgba(slot.color, 0);
+        const bed = gradient([[0, slot.color], [Math.max(.0001, reveal - .018), slot.color], [Math.max(.0002, reveal), clear], [1, clear]]);
+        map.setPaintProperty(`${slot.id}-bed`, "line-gradient", reveal >= 1 ? ["interpolate", ["linear"], ["line-progress"], 0, slot.color, 1, slot.color] : bed);
+        map.setPaintProperty(`${slot.id}-glow`, "line-gradient", gradient([[0, clear], [head - .32, clear], [head - .11, rgba(slot.color, .6)], [head - .018, slot.color], [head + .018, clear], [1, clear]]));
+        map.setPaintProperty(slot.id, "line-gradient", gradient([[0, clear], [head - .25, clear], [head - .08, rgba(slot.color, .5)], [head - .004, slot.color], [head + .008, clear], [1, clear]]));
+        if (head <= 0 || head > 1) return [];
+        return [{ type: "Feature" as const, properties: { color: slot.color }, geometry: { type: "Point" as const, coordinates: headPosition(slot, head) } }];
+      });
+      (map.getSource("search-ray-heads") as GeoJSONSource).setData({ type: "FeatureCollection", features: heads });
     };
-    frame = requestAnimationFrame(draw);
+    redraw.current = draw;
+    draw(performance.now());
+    const tick = (now: number) => {
+      if (now - previous >= 40) { previous = now; draw(now); }
+      frame = requestAnimationFrame(tick);
+    };
+    if (!reduced) frame = requestAnimationFrame(tick);
     return () => {
+      redraw.current = null;
       cancelAnimationFrame(frame);
+      for (const id of ["search-ray-heads", "search-ray-heads-glow"]) if (map.getLayer(id)) map.removeLayer(id);
+      if (map.getSource("search-ray-heads")) map.removeSource("search-ray-heads");
       for (const { id } of slots) {
-        if (map.getLayer(id)) map.removeLayer(id);
-        if (map.getLayer(`${id}-bed`)) map.removeLayer(`${id}-bed`);
+        for (const layer of [id, `${id}-bed`, `${id}-glow`]) if (map.getLayer(layer)) map.removeLayer(layer);
         if (map.getSource(id)) map.removeSource(id);
       }
     };
-  }, [mapRef, ready, active]);
+  }, [mapRef, ready, active, reduced]);
+
+  // Reduced-motion rendering is event-driven: new real routes appear without an animation loop.
+  useEffect(() => { redraw.current?.(performance.now()); }, [traces]);
 }
