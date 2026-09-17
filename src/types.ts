@@ -60,6 +60,7 @@ export type SearchRoute = {
   totalLow: number;
   totalHigh: number;
 };
+export type CircuitStrategy = "balanced" | "closest" | "more-spaces";
 export type Candidate = {
   id: string;
   street: string;
@@ -82,6 +83,8 @@ export type Candidate = {
   reason: string;
   parkingType: "paid" | "free" | "mixed";
   searchRoute?: SearchRoute;
+  /** Optional so server-saved street plans from earlier versions remain readable. */
+  circuit?: { strategy: CircuitStrategy };
 };
 export type Plan = {
   input: TripInput;

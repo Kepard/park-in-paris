@@ -10,7 +10,6 @@ import {
   CircleParking,
   LoaderCircle,
   X,
-  Check,
   Info,
   ExternalLink,
   Download,
@@ -27,6 +26,8 @@ import { MapView } from "./components/MapView";
 import { Modal } from "./components/Modal";
 import { SurveyForm } from "./components/SurveyForm";
 import { RouteNavigation } from "./components/RouteNavigation";
+import { CircuitCard, walkingRange } from "./components/CircuitCard";
+import { CIRCUIT_LABELS, circuitSummary } from "./lib/circuitSummary";
 import { GARNIER, MONTREUIL, navigationURL, streetViewURL } from "./lib/api";
 import { defaultTimes, parseParis } from "./lib/rules";
 import { planTrip } from "./lib/planner";
@@ -63,6 +64,7 @@ export default function App() {
     [traces, setTraces] = useState<SearchTrace[]>([]),
     [selected, setSelected] = useState(0),
     [selectedStop, setSelectedStop] = useState(0),
+    [focusMode, setFocusMode] = useState<"circuit" | "street">("circuit"),
     [focusRequest, setFocusRequest] = useState(0),
     [searching, setSearching] = useState(false),
     [stage, setStage] = useState("Reading the Paris parking inventory"),
@@ -81,15 +83,16 @@ export default function App() {
   const active = trips.find((t) => t.status === "active"),
     surveyTrip = trips.find((t) => t.id === surveyId),
     candidate = plan?.candidates[selected],
+    summary = candidate ? circuitSummary(candidate) : undefined,
     focusedStreet = candidate?.searchRoute?.stops[selectedStop] ?? candidate;
   const revealMap = useCallback(() => {
     if (innerWidth <= 760) window.scrollTo({ top: 0, behavior: reduceMotion ? "instant" : "smooth" });
   }, [reduceMotion]);
   const selectCandidate = useCallback((index: number) => {
-    setSelected(index); setSelectedStop(0); setFocusRequest(n => n + 1); revealMap();
+    setSelected(index); setSelectedStop(0); setFocusMode("circuit"); setFocusRequest(n => n + 1); revealMap();
   }, [revealMap]);
   const selectStop = useCallback((index: number) => {
-    setSelectedStop(index); setFocusRequest(n => n + 1); revealMap();
+    setSelectedStop(index); setFocusMode("street"); setFocusRequest(n => n + 1); revealMap();
   }, [revealMap]);
   usePlanTool(tab === "results" ? plan : null);
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -177,6 +180,7 @@ export default function App() {
       setPlan(result);
       setSelected(0);
       setSelectedStop(0);
+      setFocusMode("circuit");
       setProgress(100);
       setTab("results");
     } catch (e) {
@@ -208,7 +212,7 @@ export default function App() {
       modelVersion: plan.modelVersion,
     };
     if (updateTrips([trip, ...trips])) {
-      setToast("Trip saved. Open your driving route below.");
+      setToast("Circuit saved. Open your driving route below.");
       setReminderDismissed(null);
     }
   }
@@ -239,6 +243,7 @@ export default function App() {
         selectedStop={selectedStop}
         onSelectStop={selectStop}
         focusRequest={focusRequest}
+        focusMode={focusMode}
         destination={destination}
         origin={origin}
         searching={searching}
@@ -280,7 +285,7 @@ export default function App() {
           <span>
             <span className="small-dot" />
             {due ? "Back from your trip?" : "Trip in progress"}{" "}
-            <strong>{active.candidate.street}</strong>
+            <strong>{active.candidate.circuit ? CIRCUIT_LABELS[active.candidate.circuit.strategy] : active.candidate.street}</strong>
           </span>
           <button onClick={() => setSurveyId(active.id)}>
             Finish & review <ArrowUpRight size={15} />
@@ -304,7 +309,7 @@ export default function App() {
               </div>
               <h1>Where to?</h1>
               <p className="intro">
-                Find a place to park.
+                Find your parking circuit.
                 <br />
                 Make the rest a Parisian walk.
               </p>
@@ -446,7 +451,7 @@ export default function App() {
               ) : (
                 <div className="planner-note">
                   <Route size={16} />
-                  <span>Drive + find a spot + walk. All considered.</span>
+                  <span>More spaces. A short circuit. A little walk.</span>
                 </div>
               )}
               <div className="source-note">
@@ -462,9 +467,9 @@ export default function App() {
                 <ArrowLeft size={16} />
                 Adjust your trip
               </button>
-              <div className="eyebrow result-eyebrow">A FEW STREETS. ONE SIMPLE PLAN.</div>
+              <div className="eyebrow result-eyebrow">A FEW STREETS. MORE POSSIBILITIES.</div>
               <h1 className="result-title">
-                A good place to start.
+                Your way to a space.
               </h1>
               <p className="result-destination">
                 <MapPin size={15} />
@@ -472,62 +477,31 @@ export default function App() {
               </p>
               <div className="estimate-label">
                 <Info size={13} />
-                Choose a starting street · tap to explore its spaces
+                Choose a circuit · explore every street on the map
               </div>
+              <p className="circuit-results-note">Mapped spaces, a compact drive, and your walk — choose the balance that suits you.</p>
               <div className="result-list">
                 {plan.candidates.map((c, index) => (
-                  <button
-                    className={`result-card ${selected === index ? "is-selected" : ""}`}
-                    key={c.id}
-                    onClick={() => selectCandidate(index)}
-                    aria-pressed={selected === index}
-                  >
-                    <div className="result-top">
-                      <span className="result-number">0{index + 1}</span>
-                      <span className="result-street">
-                        {c.street}
-                        <small>{c.arrondissement}e arrondissement · {(c.searchRoute?.stops.length ?? 0) > 1 ? `${c.searchRoute!.stops.length - 1} backup ${c.searchRoute!.stops.length === 2 ? "street" : "streets"}` : "starting street"}</small>
-                      </span>
-                      {index === 0 ? (
-                        <span className="best-tag">BEST BALANCE</span>
-                      ) : null}
-                    </div>
-                    <div className="result-timing">
-                      <strong>
-                        {c.capacity}
-                      </strong>
-                      <span>
-                        mapped spaces
-                        <br />
-                        <b>on this street · tap to look closer</b>
-                      </span>
-                      <span className="selection-circle">
-                        {selected === index ? <Check size={13} /> : null}
-                      </span>
-                    </div>
-                    <div className="time-breakdown">
-                      <span>
-                        <Car size={14} />
-                        {Math.ceil(c.driveMinutes)} drive
-                      </span>
-                      <span>
-                        <CircleParking size={14} />
-                        {c.searchLow}–{c.searchHigh} search
-                      </span>
-                      <span>
-                        <Footprints size={14} />
-                        {Math.ceil(c.walkMinutes)} walk
-                      </span>
-                    </div>
-                  </button>
+                  <CircuitCard
+                    key={`${c.circuit?.strategy ?? index}:${c.searchRoute?.stops.map(stop => stop.id).join(">") ?? c.id}`}
+                    candidate={c}
+                    selected={selected === index}
+                    onSelect={() => selectCandidate(index)}
+                  />
                 ))}
               </div>
+              {summary ? <div className="circuit-summary">
+                <p><Car size={14} /><strong>{Math.ceil(candidate.driveMinutes)} min to the circuit</strong></p>
+                <small>{Math.floor(summary.totalLow)}–{Math.ceil(summary.totalHigh)} min to your destination, including driving, searching and walking.</small>
+                <small className="circuit-finish-note">Follow the streets in order. Stop as soon as you find a space — there’s no need to finish the circuit.</small>
+              </div> : null}
               <div className="selected-detail">
+                <span className="circuit-preview-label">STREET PREVIEW · SELECT A NUMBER ON THE MAP</span>
                 <span><CircleParking size={14} />{focusedStreet?.street} · {focusedStreet?.parkingType === "paid" ? "paid parking" : focusedStreet?.parkingType === "mixed" ? "mixed parking" : "eligible free / shared bays"}</span>
                 {focusedStreet?.sharedCapacity ? <span>{focusedStreet.sharedCapacity} shared delivery spaces eligible for this stay.</span> : null}
                 {candidate.learnedFrom ? <span><Sparkles size={13} />Adjusted using {candidate.learnedFrom} similar first-street visits.</span> : null}
               </div>
-              <RouteNavigation key={candidate.id} candidate={candidate} origin={plan.input.origin.coordinates} />
+              <RouteNavigation key={`${candidate.circuit?.strategy ?? "legacy"}:${candidate.searchRoute?.stops.map(stop => stop.id).join(">") ?? candidate.id}`} candidate={candidate} origin={plan.input.origin.coordinates} />
               <a className="street-view-link" href={streetViewURL(focusedStreet!.coordinates)} target="_blank" rel="noopener noreferrer">
                 <ScanEye size={18} /> Preview {focusedStreet?.street} in Street View <ArrowUpRight size={16} />
               </a>
@@ -536,7 +510,7 @@ export default function App() {
                 onClick={startTrip}
                 disabled={!!active}
               >
-                {active ? "Trip in progress" : "Use this parking plan"}
+                {active ? "Trip in progress" : "Use this circuit"}
                 <ArrowUpRight size={20} />
               </button>
               <a
@@ -551,7 +525,7 @@ export default function App() {
                 rel="noopener noreferrer"
               >
                 <Footprints size={14} />
-                Open the walk to your destination <ArrowRight size={13} />
+                Walk from this street to your destination <ArrowRight size={13} />
               </a>
               <p className="result-caveat">
                 Spaces are mapped, not confirmed empty. Check street signs when
@@ -588,7 +562,7 @@ export default function App() {
             <div className="search-progress" role="progressbar" aria-label="Parking search progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
               <span style={{ width: `${Math.max(5, progress)}%` }} />
             </div>
-            <div className="search-phases" aria-hidden="true"><span className={progress >= 6 ? "reached" : ""}>Map spaces</span><span className={progress >= 30 ? "reached" : ""}>Compare walks</span><span className={progress >= 88 ? "reached" : ""}>Link streets</span></div>
+            <div className="search-phases" aria-hidden="true"><span className={progress >= 6 ? "reached" : ""}>Map spaces</span><span className={progress >= 30 ? "reached" : ""}>Connect streets</span><span className={progress >= 88 ? "reached" : ""}>Compare circuits</span></div>
             <small>Following real roads. Keeping your walk in reach.</small>
           </motion.div>
         ) : null}
@@ -605,12 +579,12 @@ export default function App() {
           <div>
             <strong>
               {candidate && tab === "results"
-                ? `Explore ${focusedStreet?.street}`
+                ? candidate.circuit ? CIRCUIT_LABELS[candidate.circuit.strategy] : "Explore your parking circuit"
                 : "A city of possibilities."}
             </strong>
             <span>
               {candidate && tab === "results"
-                ? `Mapped parking sections · ${Math.ceil(focusedStreet?.walkMinutes ?? candidate.walkMinutes)} min on foot to your destination`
+                ? `${summary?.capacity} mapped spaces · ${walkingRange(summary!.walkMin, summary!.walkMax)} min walk · tap a street number to inspect`
                 : "Pick a destination. We’ll take it from here."}
             </span>
           </div>
@@ -620,11 +594,19 @@ export default function App() {
         <Modal title="A little clarity." onClose={() => setShowInfo(false)}>
           <div className="info-copy">
             <p>
-              <strong>Mapped supply, estimated availability.</strong> We rank
-              compact street areas by driving, estimated search, and walking
-              time, then link up to three nearby backup streets using actual
-              driving routes. Each counted parking section stays within your
-              walking limit. A mapped space may already be occupied.
+              <strong>Compare whole circuits.</strong> We look for more distinct
+              eligible spaces along short driving routes, close to your
+              destination. A parking section counts once, even if streets overlap.
+              Every counted section stays within your walking limit. More mapped
+              spaces give you more places to check; they do not tell us how many
+              are empty.
+            </p>
+            <p>
+              <strong>Three ways to arrive.</strong> Golden balance weighs mapped
+              spaces, driving distance and walking together. Closest walk puts
+              proximity first; more parking options favours greater mapped supply.
+              We show fewer choices when the alternatives are too similar.
+              These are planning tradeoffs, not measured odds or safety ratings.
             </p>
             <p>
               <strong>Open routing.</strong> Driving and walking routes come
@@ -633,11 +615,18 @@ export default function App() {
               assumption, not live or measured historical traffic.
             </p>
             <p>
-              <strong>A short search route.</strong> Start with the first street,
-              then follow the backups only if needed. The arrival range includes
-              searching earlier streets and driving between them. It describes
-              quick through longer searches, not a guaranteed arrival or a
-              probability of finding a space.
+              <strong>Drive until you find a space.</strong> The circuit gives you
+              up to four streets in driving order, with short connections between
+              them. You can stop on any street; you do not need to complete a loop.
+              The total time range covers finding a space early or continuing
+              along the circuit, then walking. It is a scenario range, not a
+              guaranteed arrival time.
+            </p>
+            <p>
+              <strong>A useful route, with nearby spaces.</strong> Circuit distance
+              measures the connections between street stopping points. Counted
+              parking sections can lie nearby along those streets; the route does
+              not promise to pass every individual space.
             </p>
             <p>
               <strong>An early parking model.</strong> Search scenarios use
@@ -722,7 +711,8 @@ export default function App() {
                       <time>{formatDate(t.createdAt)}</time>
                     </div>
                     <h3>{t.input.destination.label.split(" · ")[0]}</h3>
-                    <p>{t.candidate.searchRoute ? "Started at " : ""}{t.candidate.street}</p>
+                    <p>{t.candidate.circuit ? `${CIRCUIT_LABELS[t.candidate.circuit.strategy]} · ${circuitSummary(t.candidate).capacity} mapped spaces` : `${t.candidate.searchRoute ? "Circuit from " : ""}${t.candidate.street}`}</p>
+                    {t.candidate.searchRoute ? <p className="trip-circuit-streets">{t.candidate.searchRoute.stops.map(stop => stop.street).join(" → ")}</p> : null}
                     {t.survey ? (
                       <div className="trip-feedback">
                         <CheckCircle2 size={15} />

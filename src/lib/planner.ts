@@ -10,8 +10,9 @@ import type {
 } from "../types";
 import { getInventory, getRoute } from "./api";
 import { eligible, holidays, parseParis, parisParts, rushFactor } from "./rules";
-import { buildSearchRoute, CIRCUIT_LIMITS, createCircuitRoutingBudget, rankSearchRoutes } from "./searchCircuit";
-export const MODEL_VERSION = "opportunity-circuit-v2.1";
+import { buildSearchRouteOptions, CIRCUIT_LIMITS, createCircuitRoutingBudget } from "./searchCircuit";
+import { circuitUtility, selectCircuitChoices } from "./circuitRanking";
+export const MODEL_VERSION = "opportunity-circuit-v3.0";
 export const BACKUP_DISCOVERY_LIMITS = { perStart: 4, total: 12 };
 export function distance(a: Coordinate, b: Coordinate) {
   const r = Math.PI / 180,
@@ -135,36 +136,67 @@ export function groupsFor(inventory: Inventory, input: TripInput, backupAnchors?
       }
     return backups;
   }
-  const nearest = [...groups]
-    .sort((a, b) => a.distance - b.distance)
-    .slice(0, 3);
-  const promising = [...groups].sort(
-    (a, b) =>
-      b.capacity / (1 + b.distance / 450) - a.capacity / (1 + a.distance / 450),
-  );
-  const spread = [...groups].sort(
-    (a, b) =>
-      distance(a.coordinates, input.origin.coordinates) +
-      a.distance * 0.2 -
-      (distance(b.coordinates, input.origin.coordinates) + b.distance * 0.2),
-  );
+  // Seed whole neighborhoods: a modest first street can lead to a much richer, compact circuit.
+  const potentials = new Map(groups.map(group => [group.id, neighborhoodCapacity(group, groups)]));
+  const potential = (group: Group) => potentials.get(group.id)!;
+  const useful = groups.filter(group => group.capacity >= CIRCUIT_LIMITS.minimumCapacity);
+  const nearest = [...(useful.length ? useful : groups)].sort((a, b) => a.distance - b.distance);
+  const individual = [...groups].sort((a, b) => b.capacity / (1 + b.distance / 450) - a.capacity / (1 + a.distance / 450));
+  const balanced = [...groups].sort((a, b) =>
+    potential(b) / (1 + b.distance / 450) - potential(a) / (1 + a.distance / 450));
+  const abundant = [...groups].sort((a, b) => potential(b) - potential(a));
+  const approach = [...groups].sort((a, b) => distance(a.coordinates, input.origin.coordinates) + a.distance * 0.2 -
+    distance(b.coordinates, input.origin.coordinates) - b.distance * 0.2);
   const shortlist: Group[] = [];
-  for (const group of [
-    ...nearest,
-    ...promising.slice(0, 7),
-    ...spread.slice(0, 4),
-  ])
-    if (!shortlist.some((x) => x.id === group.id)) shortlist.push(group);
+  const add = (group: Group) => {
+    if (!shortlist.some(other => other.id === group.id ||
+      (other.street === group.street && distance(other.coordinates, group.coordinates) < 180))) shortlist.push(group);
+  };
+  for (let rank = 0; rank < 4 && shortlist.length < 12; rank++) {
+    for (const list of [nearest, individual, balanced, abundant]) {
+      const group = list.filter(group => !shortlist.some(other => other.street === group.street && distance(other.coordinates, group.coordinates) < 180))[0];
+      if (group) add(group);
+      if (shortlist.length >= 12) break;
+    }
+  }
+  for (const group of approach) { if (shortlist.length >= 12) break; add(group); }
   return shortlist.slice(0, 12);
 }
-function distinctStarts(candidates: Candidate[]) {
-  const distinct: Candidate[] = [];
-  for (const candidate of [...candidates].sort((a, b) => a.total - b.total)) {
-    if (!distinct.some(other => other.street === candidate.street || distance(other.coordinates, candidate.coordinates) < 140))
-      distinct.push(candidate);
-    if (distinct.length === 3) break;
+
+function neighborhoodCapacity<T extends { street: string; coordinates: Coordinate; capacity: number }>(anchor: T, candidates: T[]) {
+  const streets = new Map<string, number>();
+  for (const candidate of candidates) {
+    const metres = distance(anchor.coordinates, candidate.coordinates);
+    if (metres > CIRCUIT_LIMITS.nearbyMetres || candidate.street === anchor.street) continue;
+    const value = candidate.capacity / (1 + metres / 600);
+    streets.set(candidate.street, Math.max(streets.get(candidate.street) ?? 0, value));
   }
-  return distinct;
+  return anchor.capacity + [...streets.values()].sort((a, b) => b - a).slice(0, 3).reduce((sum, capacity) => sum + capacity, 0);
+}
+
+/** Seed close, balanced, and space-rich areas instead of taking the three best isolated streets. */
+export function circuitSeeds(candidates: Candidate[]) {
+  const potentials = new Map(candidates.map(candidate => [candidate.id, neighborhoodCapacity(candidate, candidates)]));
+  const potential = (candidate: Candidate) => potentials.get(candidate.id)!;
+  const useful = candidates.filter(candidate => candidate.capacity >= CIRCUIT_LIMITS.minimumCapacity);
+  const pool = useful.length ? useful : candidates;
+  const individual = [...pool].sort((a, b) => circuitUtility(b) - circuitUtility(a));
+  const objectives = [
+    [...pool].sort((a, b) => a.walkMinutes - b.walkMinutes || potential(b) - potential(a)),
+    individual,
+    [...pool].sort((a, b) => potential(b) - potential(a)),
+    [...pool].sort((a, b) => potential(b) / (1 + b.walkMinutes / 7 + b.driveMinutes / 25) -
+      potential(a) / (1 + a.walkMinutes / 7 + a.driveMinutes / 25)),
+    individual,
+    [...pool].sort((a, b) => a.walkMinutes - b.walkMinutes || potential(b) - potential(a)),
+  ];
+  const seeds: Candidate[] = [];
+  for (const ranked of objectives) {
+    const candidate = ranked.find(candidate => !seeds.some(other => other.street === candidate.street ||
+      distance(candidate.coordinates, other.coordinates) < 140));
+    if (candidate) seeds.push(candidate);
+  }
+  return seeds;
 }
 export async function planTrip(
   input: TripInput,
@@ -316,12 +348,12 @@ export async function planTrip(
     const passGroups = pass === 0 ? groups : groupsFor(inventory, input, starts, routedIds);
     for (let index = 0; index < passGroups.length; index++) {
       progress(
-        pass === 0 ? `Comparing street ${index + 1} of ${passGroups.length}` : `Checking nearby backup street ${index + 1} of ${passGroups.length}`,
+        pass === 0 ? `Comparing street ${index + 1} of ${passGroups.length}` : `Mapping circuit street ${index + 1} of ${passGroups.length}`,
         pass === 0 ? 8 + Math.round((index / passGroups.length) * 52) : 60 + Math.round((index / passGroups.length) * 22),
       );
       await routeGroup(passGroups[index]);
     }
-    if (pass === 0) starts.push(...distinctStarts(candidates));
+    if (pass === 0) starts.push(...circuitSeeds(candidates).slice(0, 3));
   }
   if (Date.now() - Date.parse(inventory.updated) > 7 * 86400000)
     warnings.push("The parking inventory is more than a week old; recent street changes may be missing.");
@@ -331,42 +363,43 @@ export async function planTrip(
         ? "The routing service could not respond. Please try again."
         : "No suitable streets fit this walking limit and parking period. Try a longer walk or a shorter stay; paid visitor parking is limited to six hours.",
     );
-  const distinct = distinctStarts(candidates);
+  const seeds = circuitSeeds(candidates);
   const routingBudget = createCircuitRoutingBudget();
-  for (let index = 0; index < distinct.length; index++) {
-    const candidate = distinct[index];
-    progress(`Connecting nearby streets · route ${index + 1} of ${distinct.length}`, 83 + Math.round(index / distinct.length * 9));
-    candidate.searchRoute = await buildSearchRoute(candidate, candidates, input, signal, {
-      onTrace, routingBudget, maxRequests: 12,
-      estimate: (stop, capacity, arrival) => searchEstimate(capacity, arrival, stop.arrondissement, trips, stop.street, input.useExperience, stop.coordinates),
-    });
+  const routeOptions: Candidate[] = [];
+  const estimate = (stop: Candidate, capacity: number, arrival: Date) =>
+    searchEstimate(capacity, arrival, stop.arrondissement, trips, stop.street, input.useExperience, stop.coordinates);
+  for (let index = 0; index < seeds.length; index++) {
+    const seed = seeds[index];
+    progress(`Comparing circuit shapes · area ${index + 1} of ${seeds.length}`, 83 + Math.round(index / seeds.length * 11));
+    const routes = await buildSearchRouteOptions(seed, candidates, input, signal, { onTrace, routingBudget, maxRequests: Math.min(16, Math.max(8, Math.floor(routingBudget.remaining / (seeds.length - index)))), estimate });
+    routeOptions.push(...routes.map(searchRoute => ({ ...seed, searchRoute })));
   }
-  // Some one-way streets look promising on a map but dead-end a search circuit. Discover a small
-  // second batch near unfinished paths, rather than accepting too few backups after the first shortlist.
-  const incomplete = distinct.filter(candidate => candidate.searchRoute!.stops.length < CIRCUIT_LIMITS.streets);
-  for (let index = 0; index < incomplete.length; index++) {
-    const primary = incomplete[index];
-    const last = primary.searchRoute!.stops.at(-1)!;
-    const lastCandidate = candidates.find(candidate => candidate.id === last.id)!;
-    const visitedStreets = new Set(primary.searchRoute!.stops.map(stop => stop.street));
-    const extraGroups = groupsFor(inventory, input, [lastCandidate, primary], routedIds)
-      .filter(group => !visitedStreets.has(group.street) && distance(primary.coordinates, group.coordinates) <= CIRCUIT_LIMITS.fromStartMetres)
-      .slice(0, 2);
-    progress(`Completing backup streets · route ${index + 1} of ${incomplete.length}`, 93 + Math.round(index / incomplete.length * 5));
-    for (const group of extraGroups) await routeGroup(group);
+  // Poor one-way entry points may use little of their allocation. Spend the remaining shared budget
+  // on other promising local starts rather than returning only a distant circuit from a sparse graph.
+  const untested = candidates.filter(candidate => !seeds.some(seed => seed.id === candidate.id) && candidate.capacity >= CIRCUIT_LIMITS.minimumCapacity)
+    .sort((a, b) => circuitUtility(b) - circuitUtility(a)).slice(0, 6);
+  for (const candidate of untested) {
+    if (routingBudget.remaining <= 0) break;
+    const routes = await buildSearchRouteOptions(candidate, candidates, input, signal, { onTrace, routingBudget, maxRequests: Math.min(8, routingBudget.remaining), estimate });
+    routeOptions.push(...routes.map(searchRoute => ({ ...candidate, searchRoute })));
   }
-  for (const candidate of incomplete) {
-    const extended = await buildSearchRoute(candidate, candidates, input, signal, {
-      onTrace, routingBudget,
-      estimate: (stop, capacity, arrival) => searchEstimate(capacity, arrival, stop.arrondissement, trips, stop.street, input.useExperience, stop.coordinates),
-    });
-    if (extended.stops.length >= candidate.searchRoute!.stops.length) candidate.searchRoute = extended;
+  // The same cached graph can have a better entry point or ordering. Evaluate every start, without another road request.
+  progress("Balancing spaces, circuit length and walking", 96);
+  for (const candidate of candidates) {
+    const routes = await buildSearchRouteOptions(candidate, candidates, input, signal, { routingBudget, maxRequests: 0, estimate });
+    routeOptions.push(...routes.map(searchRoute => ({ ...candidate, searchRoute })));
+  }
+  const choices = selectCircuitChoices(routeOptions);
+  for (const choice of choices) {
+    choice.reason = choice.circuit?.strategy === "closest" ? "A shorter walk from the parking streets to your destination." :
+      choice.circuit?.strategy === "more-spaces" ? "More mapped parking opportunities across a compact circuit." :
+      "A balance of mapped spaces, short driving connections and walking distance.";
   }
   if (failed) warnings.push(`${failed} streets could not be routed and were left out.`);
-  progress("Your parking routes are ready", 99);
+  progress("Your parking circuits are ready", 99);
   return {
     input,
-    candidates: rankSearchRoutes(distinct),
+    candidates: choices,
     directDrive,
     inventoryDate: inventory.updated,
     compared: candidates.length,

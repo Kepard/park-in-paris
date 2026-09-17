@@ -10,7 +10,6 @@ export function RouteNavigation({ candidate, origin }: { candidate: Candidate; o
   const [showWaze, setShowWaze] = useState(false);
   const stops = parkingStops(candidate);
   const googleURL = googleParkingRouteURL(candidate, origin);
-  const route = candidate.searchRoute;
   return <>
     <div className="navigation-buttons">
       {stops.length > 1 ? <button onClick={() => setShowWaze(true)}>
@@ -23,17 +22,16 @@ export function RouteNavigation({ candidate, origin }: { candidate: Candidate; o
       </a>
     </div>
     <p className="nav-caption">
-      {stops.length > 1 ? `Full parking route · ${stops.length} streets` : `Directions to ${candidate.street}`}
-      {route ? ` · ${Math.floor(route.totalLow)}–${Math.ceil(route.totalHigh)} min overall` : ""}
+      {stops.length > 1 ? `Whole circuit · ${stops.length} streets in driving order` : `Directions to ${candidate.street}`}
     </p>
     {stops.length > 1 ? <p className="nav-provider-note">Google Maps: all stops. Waze: one street at a time.</p> : null}
-    {showWaze ? <Modal title="Your route with Waze." onClose={() => setShowWaze(false)}>
-      <p className="waze-intro">Waze accepts one destination at a time. Start with the first street, then open a backup here if you need it.</p>
+    {showWaze ? <Modal title="Your circuit with Waze." onClose={() => setShowWaze(false)}>
+      <p className="waze-intro">Waze accepts one destination at a time. Follow your circuit in order, opening the next street here if you still need a space.</p>
       <ol className="waze-stops">
         {stops.map((stop, index) => <li key={`${stop.street}-${index}`}>
-          <a href={navigationURL("waze", stop.coordinates)} target="_blank" rel="noopener noreferrer" aria-label={`Open ${index ? `backup ${index}` : "starting street"}, ${stop.street}, in Waze`}>
+          <a href={navigationURL("waze", stop.coordinates)} target="_blank" rel="noopener noreferrer" aria-label={`Open circuit street ${index + 1}, ${stop.street}, in Waze`}>
             <span className="waze-stop-number">{index + 1}</span>
-            <span><small>{index ? `BACKUP ${index}` : "START HERE"}</small><strong>{stop.street}</strong><span>{stop.capacity} mapped spaces</span></span>
+            <span><small>{index ? `STREET ${index + 1}` : "START HERE"}</small><strong>{stop.street}</strong><span>{stop.capacity} mapped spaces</span></span>
             <ArrowUpRight size={18} />
           </a>
         </li>)}

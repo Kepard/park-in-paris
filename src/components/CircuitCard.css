@@ -1,0 +1,46 @@
+.circuit-card { display: block; width: 100%; padding: 17px; border: 1px solid #dfe6d9; border-radius: 16px; background: #fffefb; text-align: left; transition: background .22s ease, border-color .22s ease, box-shadow .22s ease, transform .22s ease; }
+.circuit-card:hover { border-color: #a1b68d; box-shadow: 0 5px 22px #2340310a; transform: translateY(-2px); }
+.circuit-card.is-selected { background: linear-gradient(115deg, #edf4e2, #f8faf2); border-color: #a2b88a; box-shadow: inset 3px 0 #66814c; }
+.circuit-card.is-golden { border-color: #ded7b5; }
+.circuit-card.is-golden.is-selected { background: linear-gradient(115deg, #f5f0da, #fbfaf1 75%); border-color: #c4b777; box-shadow: inset 3px 0 #a9964c; }
+.circuit-card:active { transform: scale(.995); }
+.circuit-card-heading { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.circuit-card-name { display: flex; align-items: center; gap: 7px; font-weight: 650; font-size: 15px; letter-spacing: -.2px; }
+.circuit-card-name > svg { color: #6b8259; flex-shrink: 0; }
+.is-golden .circuit-card-name > svg { color: #9a8641; }
+.circuit-selection { width: 20px; height: 20px; display: grid; place-items: center; border: 1px solid #d2dcc9; background: #fffefb; border-radius: 50%; flex-shrink: 0; }
+.is-selected .circuit-selection { background: #34583d; border-color: #34583d; color: #f0f6e5; }
+.is-golden.is-selected .circuit-selection { background: #8b773b; border-color: #8b773b; color: #fffce9; }
+.circuit-card-description { display: block; color: #7a8573; font-size: 11px; line-height: 1.5; margin-top: 7px; }
+.circuit-card-metrics { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 17px 0 14px; }
+.circuit-capacity { display: flex; align-items: center; gap: 8px; }
+.circuit-capacity > strong { color: #314e37; font: 750 35px/1.1 Manrope, sans-serif; letter-spacing: -1.4px; }
+.circuit-capacity > span { color: #50644a; font-size: 11px; line-height: 1.65; }
+.circuit-capacity small { display: block; color: #7f8c75; font-size: 10px; }
+.circuit-walk { display: flex; flex-direction: column; align-items: flex-end; flex-shrink: 0; gap: 3px; }
+.circuit-walk > strong { font: 650 18px/1.2 Manrope, sans-serif; letter-spacing: -.6px; color: #405638; }
+.circuit-walk > strong small { font: 400 10px/1.2 "DM Sans", sans-serif; letter-spacing: 0; }
+.circuit-walk > span { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #7b8971; }
+.circuit-length { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; font-size: 10px; color: #6f8063; padding-top: 11px; border-top: 1px solid #dce5d2; }
+.is-golden .circuit-length { border-color: #e2dcc3; }
+.circuit-length > span { margin-left: auto; font-size: 8px; font-weight: 650; letter-spacing: .3px; color: #8b7838; }
+.circuit-street-sequence { display: block; margin-top: 10px; color: #63725b; font-size: 10px; line-height: 1.7; overflow-wrap: anywhere; }
+.circuit-sequence-arrow { color: #9ca88f; padding: 0 2px; }
+.circuit-summary { border-bottom: 1px solid var(--line); padding: 15px 2px 14px; margin: 0 0 14px; }
+.circuit-summary > p { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; color: #53694b; font-size: 12px; line-height: 1.55; }
+.circuit-summary > small { display: block; color: #829077; font-size: 11px; line-height: 1.7; }
+.circuit-summary strong { font-weight: 600; }
+.circuit-summary .circuit-finish-note { margin-top: 8px; color: #617756; }
+.circuit-preview-label { font-size: 9px; font-weight: 650; letter-spacing: 1px; color: #8d987f; }
+.circuit-results-note { font-size: 11px; color: #7c8873; line-height: 1.6; margin: 0 0 15px; }
+.trip-circuit-streets { color: #7c8872; font-size: 11px; line-height: 1.6; margin-top: 5px; }
+@media (max-width: 760px) {
+  .circuit-card { padding: 15px; }
+  .circuit-card-description, .circuit-street-sequence { font-size: 11px; }
+  .circuit-length { font-size: 11px; }
+  .circuit-length > span { font-size: 8px; }
+  .circuit-capacity > strong { font-size: 34px; }
+  .circuit-capacity > span { font-size: 11px; }
+  .circuit-results-note, .circuit-summary > small { font-size: 12px; }
+}
+@media (prefers-reduced-motion: reduce) { .circuit-card { transition: none; } .circuit-card:hover, .circuit-card:active { transform: none; } }

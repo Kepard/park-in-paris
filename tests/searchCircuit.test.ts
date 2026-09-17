@@ -58,7 +58,7 @@ test("five nearby eligible streets produce at most three backups without double-
 });
 
 test("three backups remain the default when the highest-capacity street is a directed dead end", async () => {
-  const candidates = [candidate("A", 0), candidate("B", 1, 100), candidate("C", 2, 30), candidate("D", 3, 25), candidate("E", 4, 20)];
+  const candidates = [candidate("A", 0), candidate("B", 1, 40), candidate("C", 2, 30), candidate("D", 3, 25), candidate("E", 4, 20)];
   const ids = new Map(candidates.map(c => [c.coordinates, c.id]));
   const usable = new Set(["A>B", "A>C", "C>D", "D>E"]);
   const calls: string[] = [];
@@ -166,7 +166,7 @@ test("low-capacity detours do not pad a circuit and useful backups can outweigh 
   assert.deepEqual(circuit.stops.map(stop => stop.id), ["A", "D"]);
   const fast = { ...a, total: 20 }, fallback = { ...d, total: 22, searchRoute: circuit };
   assert.equal(rankSearchRoutes([fast, fallback])[0].id, "D");
-  assert.equal(rankSearchRoutes([fast, { ...fallback, total: 26 }])[0].id, "A");
+  assert.equal(rankSearchRoutes([fast, { ...fallback, driveMinutes: 100 }])[0].id, "A");
 });
 
 test("nearby inventory discovery includes streets outside the initial shortlist with a bounded budget", () => {
@@ -211,4 +211,75 @@ test("saved circuit and exact parked stop survive validation while older trips r
   assert.equal(searchEstimate(20, new Date(a.arrival), 9, trips, a.street, true, a.coordinates).learnedFrom, 0);
   const firstStopTrips = trips.map(t => ({ ...t, survey: { ...t.survey!, streetsTried: 1, parkedStopId: a.id, actualStreet: a.street } }));
   assert.equal(searchEstimate(20, new Date(a.arrival), 9, firstStopTrips, a.street, true, a.coordinates).learnedFrom, 3);
+});
+
+
+test("whole-circuit optimization continues past the first complete path and improves its directed order", async () => {
+  const candidates = ["A", "B", "C", "D"].map((id, index) => candidate(id, index));
+  const ids = new Map(candidates.map(c => [c.coordinates, c.id]));
+  const durations = new Map([["A>B", 180], ["B>C", 180], ["C>D", 60], ["A>C", 60], ["C>B", 60], ["B>D", 60]]);
+  const result = await buildSearchRoute(candidates[0], candidates, input, signal(), {
+    route: async (from, to) => {
+      const seconds = durations.get(`${ids.get(from)}>${ids.get(to)}`) ?? 900;
+      return route(from, to, seconds, seconds * 2);
+    },
+  });
+  assert.deepEqual(result.stops.map(stop => stop.id), ["A", "C", "B", "D"]);
+  assert.equal(result.capacity, 80);
+  assert.equal(result.extraDriveMinutes, 3);
+});
+
+
+test("rejected early exits borrow spare budget before abandoning a promising start", async () => {
+  const a = candidate("A", 0);
+  const others = Array.from({ length: 6 }, (_, index) => candidate(`B${index}`, index + 1, 60 - index * 5));
+  const valid = others[4];
+  const calls: string[] = [];
+  const result = await buildSearchRoute(a, [a, ...others], input, signal(), {
+    maxRequests: 8,
+    route: async (from, to) => {
+      calls.push(`${from.join(",")}>${to.join(",")}`);
+      return route(from, to, from === a.coordinates && to === valid.coordinates ? 60 : 900);
+    },
+  });
+  assert.deepEqual(result.stops.map(stop => stop.id), ["A", "B4"]);
+  assert.ok(calls.length >= 5 && calls.length <= 8);
+});
+
+test("inventory shortlist reserves useful close and middle options alongside distant high supply", () => {
+  const tiny = Array.from({ length: 5 }, (_, index) => candidate(`tiny-${index}`, (index + 1) * 0.1, 2).bays[0]);
+  const nearby = Array.from({ length: 5 }, (_, index) => candidate(`near-${index}`, 2 + index * 0.2, 20).bays[0]);
+  const abundant = Array.from({ length: 10 }, (_, index) => candidate(`far-${index}`, 15 + index * 0.2, 60 + index).bays[0]);
+  const inventory = { updated: "2026-09-21", source: "Test", license: "Test", bays: [...tiny, ...nearby, ...abundant] };
+  const shortlist = groupsFor(inventory, { ...input, maxWalk: 30 });
+  assert.equal(shortlist.length, 12);
+  assert.ok(shortlist[0].capacity >= 6, "tiny closest anchors must not monopolize near-destination discovery");
+  assert.ok(shortlist.some(group => group.id.startsWith("near-")));
+  assert.ok(shortlist.some(group => group.id.startsWith("far-")));
+});
+
+
+test("lower-supply legs qualify only when they clearly reduce walking from the previous stop", async () => {
+  const a = { ...candidate("A", 0, 12), walkMinutes: 6.1 };
+  const b = { ...candidate("B", 1, 7), walkMinutes: 3.7 };
+  const options = { route: async (from: Coordinate, to: Coordinate) => route(from, to, 158.2, 372.4) };
+  const closer = await buildSearchRoute(a, [a, b], input, signal(), options);
+  assert.deepEqual(closer.stops.map(stop => stop.id), ["A", "B"]);
+  assert.equal(closer.capacity, 19);
+  for (const walkMinutes of [6.1, 6, 5.5, 7]) {
+    const unchangedOrFarther = { ...b, walkMinutes };
+    const result = await buildSearchRoute(a, [a, unchangedOrFarther], input, signal(), options);
+    assert.deepEqual(result.stops.map(stop => stop.id), ["A"]);
+  }
+  const tooSparse = { ...b, capacity: 5, bays: [{ ...b.bays[0], capacity: 5 }] };
+  assert.equal((await buildSearchRoute(a, [a, tooSparse], input, signal(), options)).stops.length, 1);
+  const start = { ...a, walkMinutes: 8 }, middle = { ...candidate("middle", 2, 30), walkMinutes: 4 },
+    outwardAgain = { ...candidate("outward", 3, 7), walkMinutes: 6 };
+  const estimated: string[] = [];
+  await buildSearchRoute(start, [start, middle, outwardAgain], input, signal(), {
+    route: async (from, to) => route(from, to, to === middle.coordinates ? 60 : from === middle.coordinates ? 158.2 : 900),
+    estimate: stop => { estimated.push(stop.id); return { low: 2, high: 5 }; },
+  });
+  assert.ok(estimated.includes("middle"));
+  assert.ok(!estimated.includes("outward"), "a shorter walk than the primary cannot excuse moving away from the previous stop");
 });

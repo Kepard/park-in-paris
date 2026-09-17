@@ -9,6 +9,7 @@ import {
 import type { SavedTrip, Survey } from "../types";
 import { Modal } from "./Modal";
 import { parisInput, parseParis } from "../lib/rules";
+import { CIRCUIT_LABELS } from "../lib/circuitSummary";
 export function SurveyForm({
   trip,
   onSave,
@@ -38,7 +39,7 @@ export function SurveyForm({
         ? routeStops?.find((stop) => stop.id === parkedStopId)
         : undefined;
       if (outcome === "here" && routeStops?.length && !parkedStop)
-        throw new Error("Choose the suggested street where you found a space.");
+        throw new Error("Choose the circuit street where you found a space.");
       if (
         minutes.trim() === "" ||
         !Number.isFinite(Number(minutes)) ||
@@ -86,8 +87,8 @@ export function SurveyForm({
         </p>
       </div>
       <p className="survey-street">
-        Your plan: {trip.candidate.street}
-        {routeStops && routeStops.length > 1 ? ` + ${routeStops.length - 1} nearby streets` : ""}
+        Your plan: {trip.candidate.circuit ? CIRCUIT_LABELS[trip.candidate.circuit.strategy] : trip.candidate.street}
+        {routeStops && routeStops.length > 1 ? ` · ${routeStops.length} streets` : ""}
       </p>
       <form onSubmit={submit}>
         <fieldset className="outcome-options">
@@ -96,7 +97,7 @@ export function SurveyForm({
             [
               {
                 value: "here",
-                label: routeStops?.length ? "On a suggested street" : "On the suggested street",
+                label: routeStops?.length ? "On the planned circuit" : "On the suggested street",
                 icon: CheckCircle2,
               },
               {

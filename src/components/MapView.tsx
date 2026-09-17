@@ -4,6 +4,7 @@ import * as maplibregl from "maplibre-gl";
 import mapWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { Bay, Candidate, Coordinate, Plan, Place, SearchTrace } from "../types";
+import { CIRCUIT_LABELS, circuitSummary } from "../lib/circuitSummary";
 import { useSearchRays } from "./useSearchRays";
 import "./map-experience.css";
 
@@ -48,13 +49,14 @@ function bayDetails(bay: Bay) {
 }
 
 export function MapView({
-  plan, selected, selectedStop, focusRequest, onSelect, onSelectStop,
+  plan, selected, selectedStop, focusRequest, focusMode, onSelect, onSelectStop,
   destination, origin, searching, searchPhase, traces,
 }: {
   plan: Plan | null;
   selected: number;
   selectedStop: number;
   focusRequest: number;
+  focusMode: "circuit" | "street";
   onSelect: (i: number) => void;
   onSelectStop: (i: number) => void;
   destination: Place | null;
@@ -74,6 +76,10 @@ export function MapView({
   const candidate = searching ? undefined : plan?.candidates[selected];
   const stops = candidate ? stopsFor(candidate) : [];
   const focused = stops[selectedStop] ?? stops[0];
+  const summary = candidate ? circuitSummary(candidate) : null;
+  const walkMin = summary ? Math.ceil(summary.walkMin) : 0;
+  const walkMax = summary ? Math.ceil(summary.walkMax) : 0;
+  const circuitLabel = candidate?.circuit ? CIRCUIT_LABELS[candidate.circuit.strategy] : "Parking circuit";
   useSearchRays(mapRef, ready, searching, traces, searchPhase, destination?.coordinates);
 
   useEffect(() => {
@@ -104,7 +110,7 @@ export function MapView({
       });
       map.addLayer({
         id: "drive", type: "line", source: "routes", filter: ["==", ["get", "kind"], "drive"],
-        paint: { "line-color": "#729181", "line-width": 4, "line-opacity": 0.75 },
+        paint: { "line-color": "#8b9d91", "line-width": 3, "line-opacity": 0.45 },
         layout: { "line-cap": "round", "line-join": "round" },
       });
       map.addLayer({
@@ -177,7 +183,7 @@ export function MapView({
     const routeStops = chosen ? stopsFor(chosen) : [];
     const currentStop = routeStops[selectedStop] ?? routeStops[0];
     const lines = chosen ? [
-      { type: "Feature" as const, properties: { kind: "drive" }, geometry: chosen.drive.geometry },
+      ...(view === "street" ? [{ type: "Feature" as const, properties: { kind: "drive" }, geometry: chosen.drive.geometry }] : []),
       ...routeStops.flatMap((stop) => "driveFromPrevious" in stop && stop.driveFromPrevious
         ? [{ type: "Feature" as const, properties: { kind: "circuit" }, geometry: stop.driveFromPrevious.geometry }] : []),
       { type: "Feature" as const, properties: { kind: "walk" }, geometry: currentStop.walk.geometry },
@@ -186,14 +192,14 @@ export function MapView({
     (map.getSource("parking") as maplibregl.GeoJSONSource).setData({
       type: "FeatureCollection",
       features: routeStops.flatMap((stop, index) => stop.bays.map((bay) => ({
-        type: "Feature" as const, properties: { focused: index === selectedStop },
+        type: "Feature" as const, properties: { focused: view === "circuit" || index === selectedStop },
         geometry: { type: "Point" as const, coordinates: bay.coordinates },
       }))),
     });
     const addMarker = (element: HTMLElement, coordinates: Coordinate, offset: [number, number] = [0, 0]) => {
       markers.current.push(new maplibregl.Marker({ element, offset }).setLngLat(coordinates).addTo(map));
     };
-    if (currentStop) currentStop.bays.forEach((bay) => {
+    if (currentStop && view === "street") currentStop.bays.forEach((bay) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = `parking-capacity-marker${bay.kind === "shared" ? " delivery" : ""}`;
@@ -210,27 +216,31 @@ export function MapView({
     routeStops.forEach((stop, index) => {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = `circuit-stop-marker${index === selectedStop ? " selected" : ""}`;
+      button.className = `circuit-stop-marker${view === "street" && index === selectedStop ? " selected" : ""}${view === "circuit" ? " in-circuit" : ""}`;
       const number = document.createElement("span");
       number.textContent = String(index + 1);
       const label = document.createElement("span");
       label.className = "circuit-stop-label";
       label.textContent = stop.street;
       button.append(number, label);
-      button.setAttribute("aria-label", `${index === 0 ? "Start" : `Backup ${index}`}: ${stop.street}, ${stop.capacity} mapped spaces. Zoom to street.`);
-      button.setAttribute("aria-pressed", String(index === selectedStop));
+      button.setAttribute("aria-label", `Street ${index + 1}${index === 0 ? ", circuit start" : ""}: ${stop.street}, ${stop.capacity} mapped spaces. Zoom to street.`);
+      button.setAttribute("aria-pressed", String(view === "street" && index === selectedStop));
       button.onclick = () => onSelectStop(index);
       addMarker(button, stop.coordinates, [0, -29]);
     });
     if (view === "circuit" && plan && !searching) plan.candidates.forEach((alternative, index) => {
-      if (index === selected || routeStops.some((stop) => stop.id === alternative.id)) return;
+      if (index === selected) return;
+      const anchor = stopsFor(alternative).find((stop) => !routeStops.some((current) => current.id === stop.id));
+      if (!anchor) return;
+      const label = alternative.circuit ? CIRCUIT_LABELS[alternative.circuit.strategy] : `Circuit ${index + 1}`;
+      const alternativeSummary = circuitSummary(alternative);
       const button = document.createElement("button");
       button.type = "button";
       button.className = "alternative-zone-marker";
-      button.textContent = `Option ${index + 1}`;
-      button.setAttribute("aria-label", `Select option ${index + 1}: ${alternative.street}, ${alternative.capacity} mapped spaces`);
+      button.textContent = label;
+      button.setAttribute("aria-label", `Select ${label} circuit: ${alternativeSummary.capacity} mapped spaces, ${alternativeSummary.streetCount} streets`);
       button.onclick = () => onSelect(index);
-      addMarker(button, alternative.coordinates, [0, -12]);
+      addMarker(button, anchor.coordinates, [0, -12]);
     });
     if (destination) {
       const marker = document.createElement("div");
@@ -266,13 +276,16 @@ export function MapView({
         });
       } else fitCoordinates(map, [origin.coordinates, destination.coordinates]);
     } else if (candidate) {
-      if (camera.current.plan !== plan) showCircuit();
-      else if (camera.current.focusRequest !== focusRequest || camera.current.selected !== selected || camera.current.selectedStop !== selectedStop) showStreet();
+      if (camera.current.plan !== plan || camera.current.selected !== selected) showCircuit();
+      else if (camera.current.focusRequest !== focusRequest || camera.current.selectedStop !== selectedStop) {
+        if (focusMode === "circuit") showCircuit();
+        else showStreet();
+      }
     } else if (destination) {
       map.easeTo({ center: destination.coordinates, offset: innerWidth < 760 ? [0, -80] : [215, 0], duration: reduceMotion() ? 0 : 800, zoom: 14 });
     }
     camera.current = { plan, focusRequest, selected, selectedStop };
-  }, [ready, plan, candidate, selected, selectedStop, focusRequest, destination, origin, searching, searchPhase, showCircuit, showStreet]);
+  }, [ready, plan, candidate, selected, selectedStop, focusRequest, focusMode, destination, origin, searching, searchPhase, showCircuit, showStreet]);
 
   return <>
     <div className="map-surface" ref={container} />
@@ -281,22 +294,26 @@ export function MapView({
         <button type="button" className={view === "circuit" ? "active" : ""} onClick={showCircuit} aria-pressed={view === "circuit"}><Route size={15} /> Circuit</button>
         <button type="button" className={view === "street" ? "active" : ""} onClick={showStreet} aria-pressed={view === "street"}><Focus size={15} /> Street</button>
       </div>
-      {stops.length > 1 ? <div className="map-stop-switch" aria-label="Streets in this parking plan">
+      {stops.length > 1 ? <div className="map-stop-switch" aria-label="Inspect streets in this circuit">
         {stops.map((stop, index) => <button
           type="button"
           key={stop.id}
-          className={selectedStop === index ? "active" : ""}
-          aria-pressed={selectedStop === index}
-          aria-label={`${index === 0 ? "Start" : `Backup ${index}`}: ${stop.street}. Zoom to street.`}
+          className={view === "street" && selectedStop === index ? "active" : ""}
+          aria-pressed={view === "street" && selectedStop === index}
+          aria-label={`Inspect street ${index + 1}: ${stop.street}. Zoom to street.`}
           title={`${stop.street} · ${stop.capacity} mapped spaces`}
           onClick={() => onSelectStop(index)}
-        ><span>{index + 1}</span>{index === 0 ? "Start" : `Backup ${index}`}</button>)}
+        ><span>{index + 1}</span>{index === 0 ? "Start" : "Street"}</button>)}
+      </div> : null}
+      {view === "circuit" && summary ? <div className="map-street-key map-circuit-key">
+        <span className="map-key-dot" />
+        <span><strong>{circuitLabel} · {summary.capacity} mapped spaces</strong><small>{summary.streetCount} {summary.streetCount === 1 ? "street" : "streets"} · {walkMin === walkMax ? walkMin : `${walkMin}–${walkMax}`} min walk · tap a numbered street to inspect</small></span>
       </div> : null}
       {view === "street" ? <div className="map-street-key">
         <span className="map-key-dot" />
         <span><strong>{focused.capacity} mapped spaces</strong><small>Tap a section for details · availability unknown</small></span>
       </div> : null}
     </div> : null}
-    {error ? <div className="map-error">Your browser could not display the map. Street recommendations and navigation links still work.</div> : null}
+    {error ? <div className="map-error">Your browser could not display the map. Circuit recommendations and navigation links still work.</div> : null}
   </>;
 }
