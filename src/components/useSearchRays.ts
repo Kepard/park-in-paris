@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 import type { Map, GeoJSONSource, ExpressionSpecification } from "maplibre-gl";
 import type { Coordinate, SearchTrace } from "../types";
+import { destinationSearchTraces } from "../lib/searchAnimation";
 
 const COLORS = ["#315944", "#799d71", "#bdd879", "#4f8068", "#94b780", "#416751", "#b0ce77", "#67967e"];
 const empty = () => ({ type: "FeatureCollection" as const, features: [] });
@@ -33,9 +34,15 @@ function gradient(points: [number, string][]): ExpressionSpecification {
   return ["interpolate", ["linear"], ["line-progress"], ...stops] as ExpressionSpecification;
 }
 
-export function useSearchRays(mapRef: RefObject<Map | null>, ready: boolean, active: boolean, traces: SearchTrace[]) {
-  const latest = useRef(traces);
-  latest.current = traces;
+export function useSearchRays(
+  mapRef: RefObject<Map | null>, ready: boolean, active: boolean, traces: SearchTrace[],
+  phase: "journey" | "streets", destination?: Coordinate,
+) {
+  const local = phase === "streets";
+  const paths = useMemo(() => local && destination ? destinationSearchTraces(traces, destination) : traces,
+    [traces, local, destination]);
+  const latest = useRef(paths);
+  latest.current = paths;
   const redraw = useRef<((now: number) => void) | null>(null);
   const [reduced, setReduced] = useState(() => matchMedia("(prefers-reduced-motion: reduce)").matches);
   useEffect(() => {
@@ -48,23 +55,30 @@ export function useSearchRays(mapRef: RefObject<Map | null>, ready: boolean, act
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready || !active) return;
-    const slots: Slot[] = COLORS.map((color, index) => {
+    map.addSource("search-network", { type: "geojson", data: empty() });
+    map.addLayer({
+      id: "search-network", type: "line", source: "search-network",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": "#527b51", "line-width": local ? 2 : 1.5, "line-opacity": reduced ? .5 : .15 },
+    });
+    const slots: Slot[] = Array.from({ length: local ? 12 : COLORS.length }, (_, index) => {
+      const color = COLORS[index % COLORS.length];
       const id = `search-ray-${index}`;
       map.addSource(id, { type: "geojson", lineMetrics: true, data: empty() });
       map.addLayer({
         id: `${id}-glow`, type: "line", source: id,
         layout: { "line-cap": "round", "line-join": "round" },
-        paint: { "line-color": color, "line-width": 12, "line-opacity": .12, "line-blur": 5 },
+        paint: { "line-color": color, "line-width": local ? 15 : 12, "line-opacity": .2, "line-blur": 5 },
       });
       map.addLayer({
         id: `${id}-bed`, type: "line", source: id,
         layout: { "line-cap": "round", "line-join": "round" },
-        paint: { "line-color": color, "line-width": 2.5, "line-opacity": reduced ? .75 : .25 },
+        paint: { "line-color": color, "line-width": 2.5, "line-opacity": reduced ? .8 : .33 },
       });
       map.addLayer({
         id, type: "line", source: id,
         layout: { "line-cap": "round", "line-join": "round" },
-        paint: { "line-color": color, "line-width": 4, "line-opacity": reduced ? 0 : .95 },
+        paint: { "line-color": color, "line-width": local ? 4.5 : 4, "line-opacity": reduced ? 0 : .95 },
       });
       return { id, color, started: 0, cumulative: [], length: 0 };
     });
@@ -79,8 +93,16 @@ export function useSearchRays(mapRef: RefObject<Map | null>, ready: boolean, act
     });
     let frame = 0;
     let previous = 0;
+    let renderedPaths: SearchTrace[] | undefined;
     const draw = (now: number) => {
-      const visible = latest.current.filter((trace) => trace.geometry.coordinates.length > 1).slice(-COLORS.length);
+      if (renderedPaths !== latest.current) {
+        renderedPaths = latest.current;
+        (map.getSource("search-network") as GeoJSONSource).setData({
+          type: "FeatureCollection",
+          features: renderedPaths.map((trace) => ({ type: "Feature", properties: {}, geometry: trace.geometry })),
+        });
+      }
+      const visible = latest.current.filter((trace) => trace.geometry.coordinates.length > 1).slice(-slots.length);
       const visibleIds = new Set(visible.map((trace) => trace.id));
       for (const slot of slots) {
         if (slot.trace && !visibleIds.has(slot.trace.id)) {
@@ -93,7 +115,7 @@ export function useSearchRays(mapRef: RefObject<Map | null>, ready: boolean, act
         const slot = slots.find((slot) => !slot.trace);
         if (!slot) return;
         slot.trace = trace;
-        slot.started = now + index * 55;
+        slot.started = now + index * (local ? 105 : 55);
         slot.cumulative = [0];
         slot.length = 0;
         const points = trace.geometry.coordinates;
@@ -109,7 +131,8 @@ export function useSearchRays(mapRef: RefObject<Map | null>, ready: boolean, act
       const heads = slots.flatMap((slot, index) => {
         if (!slot.trace) return [];
         const elapsed = Math.max(0, now - slot.started);
-        const travel = 3100 + index * 130;
+        // Local rays move at a similar ground speed, making junctions branch out as a wavefront.
+        const travel = local ? Math.max(2300, Math.min(6200, slot.length * 6378137 * .658 / 210 * 1000)) : 3100 + index * 130;
         const reveal = Math.min(1, elapsed / travel);
         const head = elapsed < travel ? reveal : ((elapsed - travel) % (travel + 900)) / travel;
         const clear = rgba(slot.color, 0);
@@ -138,9 +161,11 @@ export function useSearchRays(mapRef: RefObject<Map | null>, ready: boolean, act
         for (const layer of [id, `${id}-bed`, `${id}-glow`]) if (map.getLayer(layer)) map.removeLayer(layer);
         if (map.getSource(id)) map.removeSource(id);
       }
+      if (map.getLayer("search-network")) map.removeLayer("search-network");
+      if (map.getSource("search-network")) map.removeSource("search-network");
     };
-  }, [mapRef, ready, active, reduced]);
+  }, [mapRef, ready, active, reduced, local]);
 
   // Reduced-motion rendering is event-driven: new real routes appear without an animation loop.
-  useEffect(() => { redraw.current?.(performance.now()); }, [traces]);
+  useEffect(() => { redraw.current?.(performance.now()); }, [paths]);
 }

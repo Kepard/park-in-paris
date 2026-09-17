@@ -9,9 +9,9 @@ export const CIRCUIT_LIMITS = {
   fromStartMetres: 1000,
   legMinutes: 4,
   legMetres: 1200,
-  totalMinutes: 8,
+  totalMinutes: 10,
   totalMetres: 2400,
-  addedWalkMinutes: 5,
+  addedWalkMinutes: 8,
   minimumCapacity: 6,
   minimumSpacesPerDriveMinute: 3,
 };
@@ -24,7 +24,15 @@ function metresBetween(a: Coordinate, b: Coordinate) {
 }
 
 type Estimate = { low: number; high: number };
+export type CircuitRoutingBudget = {
+  remaining: number;
+  cache: Map<string, RouteData | null>;
+};
+export const createCircuitRoutingBudget = (): CircuitRoutingBudget => ({ remaining: 48, cache: new Map() });
+
 type CircuitOptions = {
+  maxRequests?: number;
+  routingBudget?: CircuitRoutingBudget;
   route?: typeof getRoute;
   onTrace?: (trace: SearchTrace) => void;
   estimate?: (candidate: Candidate, capacity: number, arrival: Date) => Estimate;
@@ -34,7 +42,7 @@ type CircuitOptions = {
 export function rankSearchRoutes(candidates: Candidate[]): Candidate[] {
   const score = (candidate: Candidate) => {
     const stops = candidate.searchRoute?.stops.length ?? 1;
-    return candidate.total + (stops >= 3 ? 0 : stops === 2 ? 2 : 5);
+    return candidate.total + (stops >= 4 ? 0 : stops === 3 ? 1 : stops === 2 ? 3 : 6);
   };
   return [...candidates].sort((a, b) => score(a) - score(b) || a.total - b.total);
 }
@@ -60,53 +68,76 @@ export async function buildSearchRoute(primary: Candidate, candidates: Candidate
   const route = options.route ?? getRoute;
   const departure = parseParis(input.departure), returnAt = parseParis(input.returnAt);
   const factor = rushFactor(departure, input.rushAllowance);
-  let earliest = new Date(departure.getTime() + primary.drive.duration * 1000);
-  let latest = new Date(departure.getTime() + primary.driveMinutes * 60000);
-  let scenarioLow = primary.driveMinutes;
-  let previous = primary;
-  let previousSearch: Estimate = { low: primary.searchLow, high: primary.searchHigh };
+  const earliest = new Date(departure.getTime() + primary.drive.duration * 1000);
+  const latest = new Date(departure.getTime() + primary.driveMinutes * 60000);
   const firstBays = primary.bays.filter(bay => eligible(bay, earliest, returnAt) && eligible(bay, latest, returnAt));
-  const stops = [stopFor(primary, firstBays, earliest, latest, primary.totalLow, primary.totalHigh)];
-  const visited = new Set([primary.street]);
-  const usedBays = new Set(firstBays.map(bay => bay.id));
-  let extraDriveMinutes = 0, extraDistance = 0;
+  type State = {
+    previous: Candidate; previousSearch: Estimate; earliest: Date; latest: Date; scenarioLow: number;
+    stops: SearchStop[]; visited: Set<string>; usedBays: Set<string>; extraDriveMinutes: number; extraDistance: number;
+  };
+  const initial: State = {
+    previous: primary, previousSearch: { low: primary.searchLow, high: primary.searchHigh }, earliest, latest,
+    scenarioLow: primary.driveMinutes,
+    stops: [stopFor(primary, firstBays, earliest, latest, primary.totalLow, primary.totalHigh)],
+    visited: new Set([primary.street]), usedBays: new Set(firstBays.map(bay => bay.id)),
+    extraDriveMinutes: 0, extraDistance: 0,
+  };
+  const budget = options.routingBudget ?? createCircuitRoutingBudget();
+  let requests = 0, best = initial;
+  const quality = (state: State) => state.stops.slice(1).reduce((sum, stop) => sum + stop.capacity, 0) /
+    (1 + state.extraDriveMinutes);
 
-  for (let stage = 1; stage < CIRCUIT_LIMITS.streets; stage++) {
+  async function transitionTo(from: Candidate, to: Candidate): Promise<RouteData | null> {
+    const key = `${from.coordinates.join(",")}>${to.coordinates.join(",")}`;
+    if (budget.cache.has(key)) return budget.cache.get(key)!;
+    // All three suggestions share the global cache and budget; a difficult first suggestion cannot consume everything.
+    if (requests >= (options.maxRequests ?? 16) || budget.remaining <= 0) return null;
+    requests++;
+    budget.remaining--;
+    try {
+      const transition = await route(from.coordinates, to.coordinates, "car", signal);
+      signal.throwIfAborted();
+      budget.cache.set(key, transition);
+      options.onTrace?.({ id: `circuit-check-${from.id}-${to.id}`, geometry: transition.geometry });
+      return transition;
+    } catch {
+      signal.throwIfAborted();
+      budget.cache.set(key, null);
+      return null;
+    }
+  }
+
+  // Seek the complete four-street path first. Backtrack when a promising street is a directed-road dead end.
+  // Depth, nearby branches and route requests are bounded; no unbounded graph crawl of Paris is performed.
+  async function explore(state: State): Promise<boolean> {
     signal.throwIfAborted();
+    if (state.stops.length > best.stops.length ||
+      (state.stops.length === best.stops.length && quality(state) > quality(best))) best = state;
+    if (state.stops.length === CIRCUIT_LIMITS.streets) return true;
     const nearby = candidates.filter(candidate =>
-      !visited.has(candidate.street) && candidate.capacity >= CIRCUIT_LIMITS.minimumCapacity && candidate.walkMinutes <= input.maxWalk &&
+      !state.visited.has(candidate.street) && candidate.capacity >= CIRCUIT_LIMITS.minimumCapacity && candidate.walkMinutes <= input.maxWalk &&
       candidate.walkMinutes <= primary.walkMinutes + CIRCUIT_LIMITS.addedWalkMinutes &&
-      metresBetween(previous.coordinates, candidate.coordinates) <= CIRCUIT_LIMITS.nearbyMetres &&
+      metresBetween(state.previous.coordinates, candidate.coordinates) <= CIRCUIT_LIMITS.nearbyMetres &&
       metresBetween(primary.coordinates, candidate.coordinates) <= CIRCUIT_LIMITS.fromStartMetres,
     ).sort((a, b) => {
       const score = (candidate: Candidate) => candidate.capacity /
-        (1 + metresBetween(previous.coordinates, candidate.coordinates) / 180 + Math.max(0, candidate.walkMinutes - primary.walkMinutes) / 3);
+        (1 + metresBetween(state.previous.coordinates, candidate.coordinates) / 180 + Math.max(0, candidate.walkMinutes - primary.walkMinutes) / 3);
       return score(b) - score(a);
     });
-    type Choice = { candidate: Candidate; stop: SearchStop; search: Estimate; earliest: Date; latest: Date; scenarioLow: number; minutes: number; distance: number; score: number };
-    let best: Choice | undefined;
-    let feasible = 0;
-    // Compare two viable directed routes per stage, trying at most four if roads are unreachable.
     for (const candidate of nearby.slice(0, 4)) {
       signal.throwIfAborted();
-      let transition: RouteData;
-      try {
-        transition = await route(previous.coordinates, candidate.coordinates, "car", signal);
-        signal.throwIfAborted();
-      } catch {
-        signal.throwIfAborted();
-        continue;
-      }
+      const transition = await transitionTo(state.previous, candidate);
+      if (!transition) continue;
       const minutes = transition.duration * factor / 60;
       if (!Number.isFinite(minutes) || minutes < 0 || !Number.isFinite(transition.distance) || transition.distance < 0 ||
         minutes > CIRCUIT_LIMITS.legMinutes || transition.distance > CIRCUIT_LIMITS.legMetres ||
-        extraDriveMinutes + minutes > CIRCUIT_LIMITS.totalMinutes || extraDistance + transition.distance > CIRCUIT_LIMITS.totalMetres) continue;
+        state.extraDriveMinutes + minutes > CIRCUIT_LIMITS.totalMinutes || state.extraDistance + transition.distance > CIRCUIT_LIMITS.totalMetres) continue;
 
       // Never unlock a delivery bay by assuming congestion or time spent on earlier unsuccessful searches.
-      const nextEarliest = new Date(earliest.getTime() + transition.duration * 1000);
-      const nextLatest = new Date(latest.getTime() + (previousSearch.high + minutes) * 60000);
-      const nextLow = scenarioLow + previousSearch.low + minutes;
-      const bays = candidate.bays.filter(bay => !usedBays.has(bay.id) &&
+      const nextEarliest = new Date(state.earliest.getTime() + transition.duration * 1000);
+      const nextLatest = new Date(state.latest.getTime() + (state.previousSearch.high + minutes) * 60000);
+      const nextLow = state.scenarioLow + state.previousSearch.low + minutes;
+      const bays = candidate.bays.filter(bay => !state.usedBays.has(bay.id) &&
         eligible(bay, nextEarliest, returnAt) && eligible(bay, nextLatest, returnAt));
       if (!bays.some(bay => bay.id === candidate.id)) continue;
       const capacity = bays.reduce((sum, bay) => sum + bay.capacity, 0);
@@ -117,27 +148,22 @@ export async function buildSearchRoute(primary: Candidate, candidates: Candidate
       const low = nextLow + search.low + candidate.walkMinutes;
       const high = (nextLatest.getTime() - departure.getTime()) / 60000 + search.high + candidate.walkMinutes;
       const stop = stopFor(candidate, bays, nextEarliest, nextLatest, low, high, transition);
-      const score = capacity / (1 + minutes + Math.max(0, candidate.walkMinutes - primary.walkMinutes) / 3);
-      if (!best || score > best.score) best = { candidate, stop, search, earliest: nextEarliest, latest: nextLatest, scenarioLow: nextLow, minutes, distance: transition.distance, score };
-      if (++feasible === 2) break;
+      const next: State = {
+        previous: candidate, previousSearch: search, earliest: nextEarliest, latest: nextLatest, scenarioLow: nextLow,
+        stops: [...state.stops, stop], visited: new Set([...state.visited, candidate.street]),
+        usedBays: new Set([...state.usedBays, ...bays.map(bay => bay.id)]),
+        extraDriveMinutes: state.extraDriveMinutes + minutes, extraDistance: state.extraDistance + transition.distance,
+      };
+      if (await explore(next)) return true;
     }
-    if (!best) break;
-    stops.push(best.stop);
-    visited.add(best.candidate.street);
-    for (const bay of best.stop.bays) usedBays.add(bay.id);
-    previous = best.candidate;
-    previousSearch = best.search;
-    earliest = best.earliest;
-    latest = best.latest;
-    scenarioLow = best.scenarioLow;
-    extraDriveMinutes += best.minutes;
-    extraDistance += best.distance;
-    options.onTrace?.({ id: `circuit-${primary.id}-${stage}`, geometry: best.stop.driveFromPrevious!.geometry });
+    return false;
   }
+  await explore(initial);
+  const stops = best.stops;
   return {
     stops,
     capacity: stops.reduce((sum, stop) => sum + stop.capacity, 0),
-    extraDriveMinutes,
+    extraDriveMinutes: best.extraDriveMinutes,
     totalLow: Math.min(...stops.map(stop => stop.totalLow)),
     totalHigh: Math.max(...stops.map(stop => stop.totalHigh)),
   };

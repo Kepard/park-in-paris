@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { buildSearchRoute, rankSearchRoutes } from "../src/lib/searchCircuit";
-import { groupsFor, searchEstimate } from "../src/lib/planner";
+import { buildSearchRoute, createCircuitRoutingBudget, rankSearchRoutes } from "../src/lib/searchCircuit";
+import { BACKUP_DISCOVERY_LIMITS, groupsFor, searchEstimate } from "../src/lib/planner";
 import { parseParis } from "../src/lib/rules";
 import { tripSchema } from "../server/schema";
 import type { Candidate, Coordinate, RouteData, SavedTrip, TripInput } from "../src/types";
@@ -57,6 +57,41 @@ test("five nearby eligible streets produce at most three backups without double-
   assert.equal(result.extraDriveMinutes, 1.5);
 });
 
+test("three backups remain the default when the highest-capacity street is a directed dead end", async () => {
+  const candidates = [candidate("A", 0), candidate("B", 1, 100), candidate("C", 2, 30), candidate("D", 3, 25), candidate("E", 4, 20)];
+  const ids = new Map(candidates.map(c => [c.coordinates, c.id]));
+  const usable = new Set(["A>B", "A>C", "C>D", "D>E"]);
+  const calls: string[] = [];
+  const routingBudget = createCircuitRoutingBudget();
+  const options = { routingBudget, route: async (from: Coordinate, to: Coordinate) => {
+    const edge = `${ids.get(from)}>${ids.get(to)}`;
+    calls.push(edge);
+    return route(from, to, usable.has(edge) ? 60 : 900);
+  } };
+  const result = await buildSearchRoute(candidates[0], candidates, input, signal(), options);
+  assert.deepEqual(result.stops.map(stop => stop.id), ["A", "C", "D", "E"]);
+  assert.equal(result.extraDriveMinutes, 3);
+  assert.ok(calls.includes("A>B"));
+  assert.ok(calls.includes("B>C"));
+  assert.ok(calls.length <= 16);
+  assert.equal(new Set(calls).size, calls.length);
+  const before = calls.length;
+  await buildSearchRoute(candidates[0], candidates, input, signal(), options);
+  assert.equal(calls.length, before, "rechecking a plan reuses directed-route results");
+});
+
+test("circuit suggestions share a hard global routing budget", async () => {
+  const candidates = [candidate("A", 0), candidate("B", 1), candidate("C", 2), candidate("D", 3)];
+  const routingBudget = createCircuitRoutingBudget();
+  routingBudget.remaining = 2;
+  let calls = 0;
+  for (const primary of candidates) await buildSearchRoute(primary, candidates, input, signal(), {
+    routingBudget, route: async (from, to) => { calls++; return route(from, to); },
+  });
+  assert.equal(calls, 2);
+  assert.equal(routingBudget.remaining, 0);
+});
+
 test("circuits bound both per-leg and cumulative detours and never repeat a street", async () => {
   const candidates = [candidate("A", 0), candidate("B", 1), candidate("C", 2), candidate("D", 3)];
   const duplicate = { ...candidate("B2", 1.2, 200), street: "Rue A" };
@@ -75,7 +110,7 @@ test("circuits bound both per-leg and cumulative detours and never repeat a stre
 
 test("backup streets respect the user's walking limit and stay close to the first street's walk", async () => {
   const a = candidate("A", 0), overLimit = { ...candidate("B", 1, 200), walkMinutes: 21 },
-    furtherAway = { ...candidate("C", 2, 200), walkMinutes: 11 }, allowed = { ...candidate("D", 3), walkMinutes: 9 };
+    furtherAway = { ...candidate("C", 2, 200), walkMinutes: 14 }, allowed = { ...candidate("D", 3), walkMinutes: 9 };
   const calls: Coordinate[] = [];
   const result = await buildSearchRoute(a, [a, overLimit, furtherAway, allowed], input, signal(), {
     route: async (from, to) => { calls.push(to); return route(from, to); },
@@ -142,8 +177,21 @@ test("nearby inventory discovery includes streets outside the initial shortlist 
   const excluded = new Set(initial.map(group => group.id));
   const backups = groupsFor(inventory, input, [a], excluded);
   assert.ok(backups.length > 0);
-  assert.ok(backups.length <= 6);
+  assert.ok(backups.length <= BACKUP_DISCOVERY_LIMITS.total);
   assert.ok(backups.every(group => !excluded.has(group.id)));
+});
+
+test("nearby discovery gives each of three starting streets three backups and one spare", () => {
+  const anchors = [candidate("start-1", -8), candidate("start-2", 8), candidate("start-3", 24)];
+  const bays = anchors.flatMap((anchor, anchorIndex) => Array.from({ length: 6 }, (_, index) => ({
+    ...candidate(`local-${anchorIndex}-${index}`, 0, 20 + index).bays[0],
+    coordinates: [anchor.coordinates[0] + (index + 1) * 0.0002, anchor.coordinates[1]] as Coordinate,
+  })));
+  const inventory = { updated: "2026-09-14", source: "Test", license: "Test", bays };
+  const backups = groupsFor(inventory, { ...input, maxWalk: 30 }, anchors);
+  assert.equal(backups.length, 12);
+  for (let index = 0; index < anchors.length; index++)
+    assert.equal(backups.filter(group => group.id.startsWith(`local-${index}-`)).length, 4);
 });
 
 test("saved circuit and exact parked stop survive validation while older trips remain valid", async () => {

@@ -49,7 +49,7 @@ function bayDetails(bay: Bay) {
 
 export function MapView({
   plan, selected, selectedStop, focusRequest, onSelect, onSelectStop,
-  destination, origin, searching, traces,
+  destination, origin, searching, searchPhase, traces,
 }: {
   plan: Plan | null;
   selected: number;
@@ -60,6 +60,7 @@ export function MapView({
   destination: Place | null;
   origin: Place | null;
   searching: boolean;
+  searchPhase: "journey" | "streets";
   traces: SearchTrace[];
 }) {
   const container = useRef<HTMLDivElement>(null);
@@ -73,7 +74,7 @@ export function MapView({
   const candidate = searching ? undefined : plan?.candidates[selected];
   const stops = candidate ? stopsFor(candidate) : [];
   const focused = stops[selectedStop] ?? stops[0];
-  useSearchRays(mapRef, ready, searching, traces);
+  useSearchRays(mapRef, ready, searching, traces, searchPhase, destination?.coordinates);
 
   useEffect(() => {
     if (!container.current) return;
@@ -233,26 +234,37 @@ export function MapView({
     });
     if (destination) {
       const marker = document.createElement("div");
-      marker.className = "destination-marker";
+      marker.className = `destination-marker${searching && searchPhase === "streets" ? " destination-search-marker" : ""}`;
       marker.textContent = "↗";
       marker.setAttribute("role", "img");
       marker.setAttribute("aria-label", `Destination: ${destination.label}`);
       addMarker(marker, destination.coordinates);
     }
-    if (origin && searching) {
+    if (origin && searching && searchPhase === "journey") {
       const marker = document.createElement("div");
       marker.className = "search-origin-marker";
       marker.setAttribute("role", "img");
       marker.setAttribute("aria-label", "Journey starts here");
       addMarker(marker, origin.coordinates);
     }
-  }, [ready, plan, selected, selectedStop, onSelect, onSelectStop, destination, origin, searching, view]);
+  }, [ready, plan, selected, selectedStop, onSelect, onSelectStop, destination, origin, searching, searchPhase, view]);
 
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
     if (searching && origin && destination) {
-      fitCoordinates(map, [origin.coordinates, destination.coordinates]);
+      if (searchPhase === "streets") {
+        // Center the destination in the unobscured map. Route arrivals never restart this camera move.
+        const mobile = window.innerWidth < 760;
+        map.easeTo({
+          center: destination.coordinates,
+          padding: 0,
+          offset: mobile ? [0, -55] : [215, -25],
+          zoom: mobile ? 14.25 : 14.8,
+          duration: reduceMotion() ? 0 : 1600,
+          essential: false,
+        });
+      } else fitCoordinates(map, [origin.coordinates, destination.coordinates]);
     } else if (candidate) {
       if (camera.current.plan !== plan) showCircuit();
       else if (camera.current.focusRequest !== focusRequest || camera.current.selected !== selected || camera.current.selectedStop !== selectedStop) showStreet();
@@ -260,7 +272,7 @@ export function MapView({
       map.easeTo({ center: destination.coordinates, offset: innerWidth < 760 ? [0, -80] : [215, 0], duration: reduceMotion() ? 0 : 800, zoom: 14 });
     }
     camera.current = { plan, focusRequest, selected, selectedStop };
-  }, [ready, plan, candidate, selected, selectedStop, focusRequest, destination, origin, searching, showCircuit, showStreet]);
+  }, [ready, plan, candidate, selected, selectedStop, focusRequest, destination, origin, searching, searchPhase, showCircuit, showStreet]);
 
   return <>
     <div className="map-surface" ref={container} />
@@ -269,6 +281,17 @@ export function MapView({
         <button type="button" className={view === "circuit" ? "active" : ""} onClick={showCircuit} aria-pressed={view === "circuit"}><Route size={15} /> Circuit</button>
         <button type="button" className={view === "street" ? "active" : ""} onClick={showStreet} aria-pressed={view === "street"}><Focus size={15} /> Street</button>
       </div>
+      {stops.length > 1 ? <div className="map-stop-switch" aria-label="Streets in this parking plan">
+        {stops.map((stop, index) => <button
+          type="button"
+          key={stop.id}
+          className={selectedStop === index ? "active" : ""}
+          aria-pressed={selectedStop === index}
+          aria-label={`${index === 0 ? "Start" : `Backup ${index}`}: ${stop.street}. Zoom to street.`}
+          title={`${stop.street} · ${stop.capacity} mapped spaces`}
+          onClick={() => onSelectStop(index)}
+        ><span>{index + 1}</span>{index === 0 ? "Start" : `Backup ${index}`}</button>)}
+      </div> : null}
       {view === "street" ? <div className="map-street-key">
         <span className="map-key-dot" />
         <span><strong>{focused.capacity} mapped spaces</strong><small>Tap a section for details · availability unknown</small></span>

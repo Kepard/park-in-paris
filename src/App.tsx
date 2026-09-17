@@ -16,7 +16,6 @@ import {
   Download,
   Trash2,
   SlidersHorizontal,
-  Navigation,
   CheckCircle2,
   Sparkles,
   ScanEye,
@@ -27,7 +26,7 @@ import { PlaceInput } from "./components/PlaceInput";
 import { MapView } from "./components/MapView";
 import { Modal } from "./components/Modal";
 import { SurveyForm } from "./components/SurveyForm";
-import { SearchRouteDetails } from "./components/SearchRouteDetails";
+import { RouteNavigation } from "./components/RouteNavigation";
 import { GARNIER, MONTREUIL, navigationURL, streetViewURL } from "./lib/api";
 import { defaultTimes, parseParis } from "./lib/rules";
 import { planTrip } from "./lib/planner";
@@ -243,6 +242,7 @@ export default function App() {
         destination={destination}
         origin={origin}
         searching={searching}
+        searchPhase={progress >= 8 ? "streets" : "journey"}
         traces={traces}
       />
       <header className="topbar">
@@ -522,39 +522,12 @@ export default function App() {
                   </button>
                 ))}
               </div>
-              <SearchRouteDetails candidate={candidate} selectedStop={selectedStop} onSelectStop={selectStop} destination={plan.input.destination} origin={plan.input.origin} />
               <div className="selected-detail">
                 <span><CircleParking size={14} />{focusedStreet?.street} · {focusedStreet?.parkingType === "paid" ? "paid parking" : focusedStreet?.parkingType === "mixed" ? "mixed parking" : "eligible free / shared bays"}</span>
                 {focusedStreet?.sharedCapacity ? <span>{focusedStreet.sharedCapacity} shared delivery spaces eligible for this stay.</span> : null}
                 {candidate.learnedFrom ? <span><Sparkles size={13} />Adjusted using {candidate.learnedFrom} similar first-street visits.</span> : null}
               </div>
-              <div className="navigation-buttons">
-                <a
-                  href={navigationURL("waze", focusedStreet!.coordinates)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <Navigation size={16} />
-                  Waze
-                  <ExternalLink size={12} />
-                </a>
-                <a
-                  href={navigationURL(
-                    "google",
-                    focusedStreet!.coordinates,
-                    selectedStop > 0 ? candidate.searchRoute?.stops[selectedStop - 1]?.coordinates : plan.input.origin.coordinates,
-                  )}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <MapPin size={16} />
-                  Google Maps
-                  <ExternalLink size={12} />
-                </a>
-              </div>
-              <p className="nav-caption">
-                Directions to {focusedStreet?.street}{selectedStop > 0 ? " · backup street" : " · start here"}.
-              </p>
+              <RouteNavigation key={candidate.id} candidate={candidate} origin={plan.input.origin.coordinates} />
               <a className="street-view-link" href={streetViewURL(focusedStreet!.coordinates)} target="_blank" rel="noopener noreferrer">
                 <ScanEye size={18} /> Preview {focusedStreet?.street} in Street View <ArrowUpRight size={16} />
               </a>
@@ -750,7 +723,6 @@ export default function App() {
                     </div>
                     <h3>{t.input.destination.label.split(" · ")[0]}</h3>
                     <p>{t.candidate.searchRoute ? "Started at " : ""}{t.candidate.street}</p>
-                    {t.candidate.searchRoute && !t.survey ? <SearchRouteDetails candidate={t.candidate} selectedStop={0} destination={t.input.destination} origin={t.input.origin} compact /> : null}
                     {t.survey ? (
                       <div className="trip-feedback">
                         <CheckCircle2 size={15} />
@@ -762,31 +734,7 @@ export default function App() {
                       </div>
                     ) : (
                       <>
-                        {!t.candidate.searchRoute ? <div className="navigation-buttons">
-                          <a
-                            href={navigationURL(
-                              "waze",
-                              t.candidate.coordinates,
-                            )}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            Waze
-                            <ExternalLink size={12} />
-                          </a>
-                          <a
-                            href={navigationURL(
-                              "google",
-                              t.candidate.coordinates,
-                              t.input.origin.coordinates,
-                            )}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            Google Maps
-                            <ExternalLink size={12} />
-                          </a>
-                        </div> : null}
+                        <RouteNavigation candidate={t.candidate} origin={t.input.origin.coordinates} />
                         <button
                           className="text-button"
                           onClick={() => {

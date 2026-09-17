@@ -761,7 +761,8 @@ h1 {
   grid-template-columns: 1fr 1fr;
   gap: 9px;
 }
-.navigation-buttons a {
+.navigation-buttons a,
+.navigation-buttons button {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -775,10 +776,12 @@ h1 {
   font-weight: 600;
   transition: background 0.2s;
 }
-.navigation-buttons a:hover {
+.navigation-buttons a:hover,
+.navigation-buttons button:hover {
   background: #e8f0dc;
 }
-.navigation-buttons a > svg:last-child {
+.navigation-buttons a > svg:last-child,
+.navigation-buttons button > svg:last-child {
   color: #97a383;
   margin-left: 3px;
 }

@@ -1,0 +1,13 @@
+.nav-provider-note { margin: 5px 0 0; text-align: center; color: #75856b; font-size: 10px; }
+.waze-intro { margin: 0 0 20px; color: #718265; font-size: 13px; line-height: 1.7; }
+.waze-stops { list-style: none; padding: 0; margin: 0 0 22px; display: grid; gap: 9px; }
+.waze-stops a { display: flex; align-items: center; gap: 13px; padding: 15px; border: 1px solid #dce5d2; border-radius: 13px; text-decoration: none; background: #f8faf4; transition: background .2s, border-color .2s; }
+.waze-stops a:hover { background: #edf3e4; border-color: #a8bd92; }
+.waze-stop-number { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; background: #e2ebd5; color: #385936; font-size: 13px; font-weight: 600; }
+.waze-stops li:first-child .waze-stop-number { background: #365936; color: #e5f2bc; }
+.waze-stops a > span:nth-child(2) { display: grid; gap: 4px; min-width: 0; flex: 1; }
+.waze-stops small { font-size: 9px; letter-spacing: .13em; color: #718265; }
+.waze-stops strong { font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.waze-stops a > span:nth-child(2) > span { font-size: 11px; color: #718265; }
+.waze-stops a > svg { flex-shrink: 0; color: #718265; }
+@media (prefers-reduced-motion: reduce) { .waze-stops a { transition: none; } }

@@ -10,8 +10,9 @@ import type {
 } from "../types";
 import { getInventory, getRoute } from "./api";
 import { eligible, holidays, parseParis, parisParts, rushFactor } from "./rules";
-import { buildSearchRoute, rankSearchRoutes } from "./searchCircuit";
-export const MODEL_VERSION = "opportunity-circuit-v2.0";
+import { buildSearchRoute, CIRCUIT_LIMITS, createCircuitRoutingBudget, rankSearchRoutes } from "./searchCircuit";
+export const MODEL_VERSION = "opportunity-circuit-v2.1";
+export const BACKUP_DISCOVERY_LIMITS = { perStart: 4, total: 12 };
 export function distance(a: Coordinate, b: Coordinate) {
   const r = Math.PI / 180,
     dLat = (b[1] - a[1]) * r,
@@ -117,18 +118,20 @@ export function groupsFor(inventory: Inventory, input: TripInput, backupAnchors?
   }
   if (backupAnchors) {
     const choices = backupAnchors.map(anchor => groups.filter(group =>
-      !excludedIds.has(group.id) && group.street !== anchor.street && distance(group.coordinates, anchor.coordinates) <= 650,
+      !excludedIds.has(group.id) && group.street !== anchor.street &&
+      group.bays.reduce((total, bay) => total + bay.capacity, 0) >= CIRCUIT_LIMITS.minimumCapacity &&
+      distance(group.coordinates, anchor.coordinates) <= CIRCUIT_LIMITS.nearbyMetres,
     ).sort((a, b) =>
       b.capacity / (1 + distance(b.coordinates, anchor.coordinates) / 180) -
       a.capacity / (1 + distance(a.coordinates, anchor.coordinates) / 180),
     ).filter((group, index, list) => list.findIndex(other => other.street === group.street) === index));
     const backups: Group[] = [];
     // Discover local streets around the best routed starts, not just the initial citywide shortlist.
-    for (let rank = 0; rank < 3 && backups.length < 6; rank++)
+    for (let rank = 0; rank < BACKUP_DISCOVERY_LIMITS.perStart && backups.length < BACKUP_DISCOVERY_LIMITS.total; rank++)
       for (const choice of choices) {
         const group = choice[rank];
         if (group && !backups.some(other => other.id === group.id)) backups.push(group);
-        if (backups.length === 6) break;
+        if (backups.length === BACKUP_DISCOVERY_LIMITS.total) break;
       }
     return backups;
   }
@@ -204,117 +207,122 @@ export async function planTrip(
   const candidates: Candidate[] = [],
     warnings: string[] = [];
   let failed = 0, routedGroups = 0;
+  const starts: Candidate[] = [];
+  const routedIds = new Set<string>();
+  async function routeGroup(g: Group) {
+    signal.throwIfAborted();
+    routedIds.add(g.id);
+    routedGroups++;
+    try {
+      const walk = await getRoute(
+        g.coordinates,
+        input.destination.coordinates,
+        "pedestrian",
+        signal,
+      );
+      if (walk.duration > input.maxWalk * 60) return;
+      onTrace?.({ id: `walk:${g.id}`, geometry: walk.geometry });
+      const drive = await getRoute(
+        input.origin.coordinates,
+        g.coordinates,
+        "car",
+        signal,
+      );
+      onTrace?.({ id: g.id, geometry: { type: "LineString", coordinates: [...drive.geometry.coordinates, ...walk.geometry.coordinates] } });
+      // Eligibility uses earliest modelled arrival; a congestion allowance must not unlock delivery bays.
+      const earliestArrival = new Date(
+        departure.getTime() + drive.duration * 1000,
+      );
+      const arrival = new Date(
+        departure.getTime() + drive.duration * multiplier * 1000,
+      );
+      if (arrival >= returnAt) return;
+      const allowed = g.bays.filter((b) =>
+        eligible(b, earliestArrival, returnAt),
+      );
+      const bays: Bay[] = [];
+      let maxWalkDuration = walk.duration;
+      // Route every counted section. A centroid or a straight-line radius cannot establish a walking cap.
+      for (const bay of allowed) {
+        const sectionWalk =
+          bay.id === g.id
+            ? walk
+            : await getRoute(
+                bay.coordinates,
+                input.destination.coordinates,
+                "pedestrian",
+                signal,
+              );
+        if (sectionWalk.duration <= input.maxWalk * 60) {
+          bays.push(bay);
+          maxWalkDuration = Math.max(maxWalkDuration, sectionWalk.duration);
+        }
+      }
+      if (!bays.some((b) => b.id === g.id)) return;
+      const capacity = bays.reduce((s, b) => s + b.capacity, 0);
+      if (capacity === 0) return;
+      const search = searchEstimate(
+        capacity,
+        arrival,
+        g.arrondissement,
+        trips,
+        g.street,
+        input.useExperience,
+        g.coordinates,
+      );
+      const driveMinutes = (drive.duration * multiplier) / 60,
+        walkMinutes = maxWalkDuration / 60;
+      // Even a zero-minute visit needs a walk to the destination and back to the car.
+      if (arrival.getTime() + (search.low + 2 * walkMinutes) * 60000 > returnAt.getTime()) return;
+      candidates.push({
+        id: g.id,
+        street: g.street,
+        arrondissement: g.arrondissement,
+        coordinates: g.coordinates,
+        bays,
+        capacity,
+        sharedCapacity: bays
+          .filter((b) => b.kind === "shared")
+          .reduce((s, b) => s + b.capacity, 0),
+        drive,
+        walk,
+        driveMinutes,
+        walkMinutes,
+        searchLow: search.low,
+        searchHigh: search.high,
+        totalLow: driveMinutes + walkMinutes + search.low,
+        totalHigh: driveMinutes + walkMinutes + search.high,
+        total: driveMinutes + walkMinutes + (search.low + search.high) / 2,
+        arrival: arrival.toISOString(),
+        learnedFrom: search.learnedFrom,
+        reason:
+          capacity >= 15
+            ? "More mapped spaces along a compact stretch."
+            : walkMinutes < 8
+              ? "A short walk after you park."
+              : "A different balance of driving and walking.",
+        parkingType: bays.every((b) => b.kind === "paid")
+          ? "paid"
+          : bays.every((b) => b.kind !== "paid")
+            ? "free"
+            : "mixed",
+      });
+    } catch (error) {
+      if (signal.aborted) throw error;
+      failed++;
+    }
+  }
   for (let pass = 0; pass < 2; pass++) {
-    const passGroups = pass === 0 ? groups : groupsFor(inventory, input, distinctStarts(candidates), new Set(groups.map(group => group.id)));
+    const passGroups = pass === 0 ? groups : groupsFor(inventory, input, starts, routedIds);
     for (let index = 0; index < passGroups.length; index++) {
-      signal.throwIfAborted();
-      const g = passGroups[index];
-      routedGroups++;
       progress(
         pass === 0 ? `Comparing street ${index + 1} of ${passGroups.length}` : `Checking nearby backup street ${index + 1} of ${passGroups.length}`,
         pass === 0 ? 8 + Math.round((index / passGroups.length) * 52) : 60 + Math.round((index / passGroups.length) * 22),
       );
-      try {
-        const walk = await getRoute(
-          g.coordinates,
-          input.destination.coordinates,
-          "pedestrian",
-          signal,
-        );
-        if (walk.duration > input.maxWalk * 60) continue;
-        const drive = await getRoute(
-          input.origin.coordinates,
-          g.coordinates,
-          "car",
-          signal,
-        );
-        onTrace?.({ id: g.id, geometry: { type: "LineString", coordinates: [...drive.geometry.coordinates, ...walk.geometry.coordinates] } });
-        // Eligibility uses earliest modelled arrival; a congestion allowance must not unlock delivery bays.
-        const earliestArrival = new Date(
-          departure.getTime() + drive.duration * 1000,
-        );
-        const arrival = new Date(
-          departure.getTime() + drive.duration * multiplier * 1000,
-        );
-        if (arrival >= returnAt) continue;
-        const allowed = g.bays.filter((b) =>
-          eligible(b, earliestArrival, returnAt),
-        );
-        const bays: Bay[] = [];
-        let maxWalkDuration = walk.duration;
-        // Route every counted section. A centroid or a straight-line radius cannot establish a walking cap.
-        for (const bay of allowed) {
-          const sectionWalk =
-            bay.id === g.id
-              ? walk
-              : await getRoute(
-                  bay.coordinates,
-                  input.destination.coordinates,
-                  "pedestrian",
-                  signal,
-                );
-          if (sectionWalk.duration <= input.maxWalk * 60) {
-            bays.push(bay);
-            maxWalkDuration = Math.max(maxWalkDuration, sectionWalk.duration);
-          }
-        }
-        if (!bays.some((b) => b.id === g.id)) continue;
-        const capacity = bays.reduce((s, b) => s + b.capacity, 0);
-        if (capacity === 0) continue;
-        const search = searchEstimate(
-          capacity,
-          arrival,
-          g.arrondissement,
-          trips,
-          g.street,
-          input.useExperience,
-          g.coordinates,
-        );
-        const driveMinutes = (drive.duration * multiplier) / 60,
-          walkMinutes = maxWalkDuration / 60;
-        // Even a zero-minute visit needs a walk to the destination and back to the car.
-        if (arrival.getTime() + (search.low + 2 * walkMinutes) * 60000 > returnAt.getTime()) continue;
-        candidates.push({
-          id: g.id,
-          street: g.street,
-          arrondissement: g.arrondissement,
-          coordinates: g.coordinates,
-          bays,
-          capacity,
-          sharedCapacity: bays
-            .filter((b) => b.kind === "shared")
-            .reduce((s, b) => s + b.capacity, 0),
-          drive,
-          walk,
-          driveMinutes,
-          walkMinutes,
-          searchLow: search.low,
-          searchHigh: search.high,
-          totalLow: driveMinutes + walkMinutes + search.low,
-          totalHigh: driveMinutes + walkMinutes + search.high,
-          total: driveMinutes + walkMinutes + (search.low + search.high) / 2,
-          arrival: arrival.toISOString(),
-          learnedFrom: search.learnedFrom,
-          reason:
-            capacity >= 15
-              ? "More mapped spaces along a compact stretch."
-              : walkMinutes < 8
-                ? "A short walk after you park."
-                : "A different balance of driving and walking.",
-          parkingType: bays.every((b) => b.kind === "paid")
-            ? "paid"
-            : bays.every((b) => b.kind !== "paid")
-              ? "free"
-              : "mixed",
-        });
-      } catch (error) {
-        if (signal.aborted) throw error;
-        failed++;
-      }
+      await routeGroup(passGroups[index]);
     }
+    if (pass === 0) starts.push(...distinctStarts(candidates));
   }
-  if (failed)
-    warnings.push(`${failed} streets could not be routed and were left out.`);
   if (Date.now() - Date.parse(inventory.updated) > 7 * 86400000)
     warnings.push("The parking inventory is more than a week old; recent street changes may be missing.");
   if (!candidates.length)
@@ -324,14 +332,37 @@ export async function planTrip(
         : "No suitable streets fit this walking limit and parking period. Try a longer walk or a shorter stay; paid visitor parking is limited to six hours.",
     );
   const distinct = distinctStarts(candidates);
+  const routingBudget = createCircuitRoutingBudget();
   for (let index = 0; index < distinct.length; index++) {
     const candidate = distinct[index];
-    progress(`Connecting nearby streets · route ${index + 1} of ${distinct.length}`, 83 + Math.round(index / distinct.length * 15));
+    progress(`Connecting nearby streets · route ${index + 1} of ${distinct.length}`, 83 + Math.round(index / distinct.length * 9));
     candidate.searchRoute = await buildSearchRoute(candidate, candidates, input, signal, {
-      onTrace,
+      onTrace, routingBudget, maxRequests: 12,
       estimate: (stop, capacity, arrival) => searchEstimate(capacity, arrival, stop.arrondissement, trips, stop.street, input.useExperience, stop.coordinates),
     });
   }
+  // Some one-way streets look promising on a map but dead-end a search circuit. Discover a small
+  // second batch near unfinished paths, rather than accepting too few backups after the first shortlist.
+  const incomplete = distinct.filter(candidate => candidate.searchRoute!.stops.length < CIRCUIT_LIMITS.streets);
+  for (let index = 0; index < incomplete.length; index++) {
+    const primary = incomplete[index];
+    const last = primary.searchRoute!.stops.at(-1)!;
+    const lastCandidate = candidates.find(candidate => candidate.id === last.id)!;
+    const visitedStreets = new Set(primary.searchRoute!.stops.map(stop => stop.street));
+    const extraGroups = groupsFor(inventory, input, [lastCandidate, primary], routedIds)
+      .filter(group => !visitedStreets.has(group.street) && distance(primary.coordinates, group.coordinates) <= CIRCUIT_LIMITS.fromStartMetres)
+      .slice(0, 2);
+    progress(`Completing backup streets · route ${index + 1} of ${incomplete.length}`, 93 + Math.round(index / incomplete.length * 5));
+    for (const group of extraGroups) await routeGroup(group);
+  }
+  for (const candidate of incomplete) {
+    const extended = await buildSearchRoute(candidate, candidates, input, signal, {
+      onTrace, routingBudget,
+      estimate: (stop, capacity, arrival) => searchEstimate(capacity, arrival, stop.arrondissement, trips, stop.street, input.useExperience, stop.coordinates),
+    });
+    if (extended.stops.length >= candidate.searchRoute!.stops.length) candidate.searchRoute = extended;
+  }
+  if (failed) warnings.push(`${failed} streets could not be routed and were left out.`);
   progress("Your parking routes are ready", 99);
   return {
     input,
