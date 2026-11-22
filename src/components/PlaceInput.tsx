@@ -3,6 +3,8 @@ import { Circle, LocateFixed, LoaderCircle, MapPin, X } from "lucide-react";
 import { geocode } from "../lib/api";
 import type { Place } from "../types";
 
+const displayLabel = (place: Place) => place.label.split(" · ")[0];
+
 export function PlaceInput({ label, value, onChange, origin = false, disabled = false }: {
   label: string;
   value: Place | null;
@@ -13,7 +15,7 @@ export function PlaceInput({ label, value, onChange, origin = false, disabled = 
   const id = useId();
   const input = useRef<HTMLInputElement>(null);
   const locationRequest = useRef(0);
-  const [text, setText] = useState(value?.label || "");
+  const [text, setText] = useState(value ? displayLabel(value) : "");
   const [choices, setChoices] = useState<Place[]>([]);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
@@ -23,10 +25,10 @@ export function PlaceInput({ label, value, onChange, origin = false, disabled = 
   const showing = open && choices.length > 0 && !disabled;
 
   useEffect(() => {
-    if (value) setText(value.label);
+    if (value) setText(displayLabel(value));
   }, [value]);
   useEffect(() => {
-    if (!open || disabled || text.trim().length < 3 || text === value?.label) return;
+    if (!open || disabled || value || text.trim().length < 3) return;
     const abort = new AbortController();
     const timer = setTimeout(async () => {
       setSearching(true);
@@ -53,7 +55,7 @@ export function PlaceInput({ label, value, onChange, origin = false, disabled = 
   }
   function choose(place: Place) {
     onChange(place);
-    setText(place.label);
+    setText(displayLabel(place));
     setMessage("");
     close();
   }
@@ -92,9 +94,13 @@ export function PlaceInput({ label, value, onChange, origin = false, disabled = 
         <input id={id} ref={input} role="combobox" aria-autocomplete="list" autoComplete="off"
           aria-controls={showing ? `${id}-list` : undefined} aria-expanded={showing}
           aria-activedescendant={showing && active >= 0 ? `${id}-option-${active}` : undefined}
-          value={text} disabled={disabled}
+          value={text} title={value?.label} aria-description={value?.label}
+          disabled={disabled} enterKeyHint="search" spellCheck={false}
           placeholder={origin ? "Starting address" : "Address or place in Paris"}
-          onFocus={() => setOpen(true)}
+          onFocus={e => {
+            setOpen(true);
+            if (value) e.currentTarget.select();
+          }}
           onChange={e => {
             locationRequest.current++;
             setLocating(false);
@@ -121,7 +127,10 @@ export function PlaceInput({ label, value, onChange, origin = false, disabled = 
     </div>
     {showing && <ul id={`${id}-list`} className="suggestions" role="listbox" aria-label={`${label} suggestions`}>
       {choices.map((place, i) => <li key={place.label} id={`${id}-option-${i}`} role="option"
-        aria-selected={active === i} onMouseDown={e => e.preventDefault()} onClick={() => choose(place)}>
+        aria-selected={active === i} onMouseDown={e => e.preventDefault()} onClick={() => {
+          choose(place);
+          if (matchMedia("(pointer: coarse)").matches) input.current?.blur();
+        }}>
         <MapPin size={15} /><span>{place.label}</span>
       </li>)}
     </ul>}

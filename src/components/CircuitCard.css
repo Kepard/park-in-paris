@@ -1,17 +1,17 @@
-.result-list { display: grid; gap: 8px; margin: 0 0 20px; }
-.circuit-card {
-  width: 100%; padding: 13px 16px; border: 1px solid var(--line); border-radius: 12px;
-  text-align: left; background: var(--paper); color: var(--ink);
-  transition: border-color .18s, background .18s;
-}
-.circuit-card:hover { border-color: #8caa9b; }
-.circuit-card.is-selected { border-color: #609079; background: #f0f5ef; }
-.circuit-card-heading, .circuit-card-meta, .circuit-card-meta > span { display: flex; align-items: center; }
-.circuit-card-heading { justify-content: space-between; gap: 8px; margin-bottom: 6px; font-size: 15px; }
-.circuit-card-heading strong { font-weight: 570; }
-.circuit-selection { display: grid; place-items: center; width: 17px; height: 17px; border: 1px solid #96a59d; border-radius: 50%; }
-.is-selected .circuit-selection { background: var(--forest); color: white; border-color: var(--forest); }
-.circuit-card-metrics { color: var(--muted); font-size: 13px; }
-.circuit-card-metrics strong { color: var(--ink); font-weight: 560; font-size: 26px; line-height: 1.2; margin-right: 2px; }
-.circuit-card-meta { gap: 14px; margin-top: 6px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
-.circuit-card-meta > span { gap: 5px; }
+.circuit-choices { margin: 16px 0 0; }
+.circuit-picker { display: flex; margin: 0 0 10px; padding: 3px; gap: 2px; border: 1px solid var(--line); background: var(--wash); border-radius: 15px; }
+.circuit-picker label { flex: 1; min-width: 0; min-height: 45px; position: relative; isolation: isolate; display: grid; align-content: center; justify-items: center; border-radius: 11px; color: var(--muted); font-size: 14px; line-height: 1.25; cursor: pointer; }
+.circuit-picker label.chosen { color: var(--ink); }
+.circuit-picker label:has(:focus-visible) { outline: 3px solid #648747; outline-offset: 1px; }
+.circuit-picker small { font-size: 11px; }
+.choice-highlight { position: absolute; inset: 0; z-index: -1; border-radius: inherit; box-shadow: 0 1px 4px #193c301b; background: white; }
+.circuit-card { position: relative; border-radius: 18px; background: #193c30; color: #fafbf6; touch-action: pan-y pinch-zoom; overflow: hidden; }
+.ticket-body { display: grid; grid-template-columns: 1fr minmax(65px, 32%); align-items: center; padding: 15px 18px 0; }
+.ticket-title { font-size: 14px; color: #e2f2de; }
+.ticket-metric { grid-column: 1; display: flex; align-items: baseline; gap: 7px; margin-top: 3px; }
+.ticket-metric strong { font-weight: 550; font-size: clamp(34px, 4vw, 44px); line-height: 1.1; letter-spacing: -.045em; }
+.ticket-metric span { font-size: 13px; color: #e2f2de; }
+.route-sketch { grid-column: 2; grid-row: 1 / 3; justify-self: end; width: 100%; max-width: 112px; height: 64px; }
+.ticket-meta { grid-column: 1/-1; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 10px; padding: 10px 0 11px; border-top: 1px solid #ffffff2b; color: #edf5ea; font-size: 12px; }
+.ticket-meta span { display: inline-flex; align-items: center; gap: 5px; }
+.ticket-meta svg { color: var(--lime); }

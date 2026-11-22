@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   Check,
   CheckCircle2,
+  ChevronDown,
   CornerDownRight,
   Flag,
 } from "lucide-react";
@@ -178,29 +179,32 @@ export function SurveyForm({
             />
           </label>
         ) : null}
-        {outcome !== "gave-up" ? (
+        <details className="survey-details">
+          <summary>Additional details <small>Optional</small><ChevronDown size={16} /></summary>
+          {outcome !== "gave-up" ? (
+            <label className="survey-label">
+              What kind of space?
+              <select
+                value={bayType}
+                onChange={(e) => setBayType(e.target.value as Survey["bayType"])}
+              >
+                <option value="ordinary">Ordinary street parking</option>
+                <option value="delivery">Shared livraison bay</option>
+                <option value="other">Something else</option>
+              </select>
+            </label>
+          ) : null}
           <label className="survey-label">
-            What kind of space?
-            <select
-              value={bayType}
-              onChange={(e) => setBayType(e.target.value as Survey["bayType"])}
-            >
-              <option value="ordinary">Ordinary street parking</option>
-              <option value="delivery">Shared livraison bay</option>
-              <option value="other">Something else</option>
-            </select>
+            Anything worth remembering?
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              maxLength={500}
+              rows={2}
+              placeholder="Roadworks, a busy evening, an easier side street…"
+            />
           </label>
-        ) : null}
-        <label className="survey-label">
-          Anything worth remembering? <span>Optional</span>
-          <textarea
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            maxLength={500}
-            rows={2}
-            placeholder="Roadworks, a busy evening, an easier side street…"
-          />
-        </label>
+        </details>
         {error ? (
           <p role="alert" className="error-message">
             {error}

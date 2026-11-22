@@ -42,3 +42,11 @@
 @media (prefers-reduced-motion: reduce) {
   .search-paths g:first-child { opacity: .75; stroke-width: 3px; }
 }
+@media (max-width: 760px) {
+  .map-view-switch { border-radius: 16px; padding: 2px; }
+  .map-view-switch button { min-height: 44px; border-radius: 12px; padding: 4px 10px; }
+  .parking-capacity-marker { min-width: 30px; height: 30px; }
+  .circuit-stop-marker { padding: 2px; }
+  .circuit-stop-label { display: none; }
+  .map-experience-controls { top: 10px; }
+}

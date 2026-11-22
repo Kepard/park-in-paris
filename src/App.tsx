@@ -4,7 +4,11 @@ import {
   MapPin,
   Route,
   Clock3,
-  ArrowLeft,
+  ChevronUp,
+  Maximize2,
+  Pencil,
+  PanelBottomOpen,
+  Check,
   ArrowRight,
   CircleParking,
   LoaderCircle,
@@ -14,17 +18,20 @@ import {
   Download,
   Trash2,
   SlidersHorizontal,
-  CalendarDays,
-  ChevronDown,
   CheckCircle2,
   ScanEye,
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { AnimatePresence, useDragControls } from "motion/react";
+import * as m from "motion/react-m";
+import { phone, useMediaQuery, useSheetInset } from "./lib/useViewport";
+import { ScheduleControl, WalkControl } from "./components/TripControls";
+import { SearchPanel } from "./components/SearchPanel";
 import { PlaceInput } from "./components/PlaceInput";
 import { Modal } from "./components/Modal";
 import { SurveyForm } from "./components/SurveyForm";
 import { RouteNavigation } from "./components/RouteNavigation";
-import { CircuitCard } from "./components/CircuitCard";
+import { CircuitChoices } from "./components/CircuitCard";
 import { CIRCUIT_LABELS, circuitSummary } from "./lib/circuitSummary";
 import { GARNIER, MONTREUIL, navigationURL, streetViewURL } from "./lib/api";
 import { defaultTimes, parseParis } from "./lib/rules";
@@ -41,16 +48,6 @@ const MapView = lazy(() => import("./components/MapView")
   </div> })));
 const inventoryVersion = import.meta.env.VITE_INVENTORY_VERSION;
 
-function scheduleLabel(departure: string, returnAt: string) {
-  try {
-    const start = parseParis(departure), end = parseParis(returnAt);
-    const format = (date: Date, showDate: boolean) => new Intl.DateTimeFormat("en-GB", {
-      timeZone: "Europe/Paris", ...(showDate && { day: "numeric", month: "short" }),
-      hour: "2-digit", minute: "2-digit",
-    }).format(date);
-    return `${format(start, true)} → ${format(end, departure.slice(0, 10) !== returnAt.slice(0, 10))}`;
-  } catch { return "Choose departure and return times"; }
-}
 const formatDate = (iso: string) =>
   new Intl.DateTimeFormat("en-GB", {
     day: "numeric",
@@ -65,10 +62,6 @@ function initialPrefs() {
     return {};
   }
 }
-function revealMap() {
-  if (innerWidth <= 760) window.scrollTo({ top: 0, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
-}
-
 export default function App() {
   const { trips, saveTrips, status: syncStatus, error: syncError, sync, canImportLegacy, legacyMessage } = useTripStore();
   const [origin, setOrigin] = useState<Place | null>(MONTREUIL),
@@ -92,25 +85,69 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false),
     [showInfo, setShowInfo] = useState(false),
     [showSettings, setShowSettings] = useState(false),
+    [showDirections, setShowDirections] = useState(false),
+    [mapExpanded, setMapExpanded] = useState(false),
     [surveyId, setSurveyId] = useState<string | null>(null),
     [toast, setToast] = useState(""),
     [reminderDismissed, setReminderDismissed] = useState<string | null>(null),
     [clock, setClock] = useState(Date.now());
   const abortRef = useRef<AbortController | null>(null);
-  const resultsTitle = useRef<HTMLHeadingElement>(null);
+  const sheet = useRef<HTMLElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  const searchError = useRef<HTMLParagraphElement>(null);
+  const sheetDrag = useDragControls();
+  const draggedHandle = useRef(false);
+  const mobile = useMediaQuery(phone);
+  const inset = useSheetInset(sheet, mobile);
+  const mode = searching ? "search" : mobile && mapExpanded ? "map" : tab;
+  const editMode = mode === "plan" || mode === "results";
+  const previousMode = useRef(mode);
+  const mapOpener = useRef<HTMLElement | null>(null);
   const active = trips.find((t) => t.status === "active"),
     surveyTrip = trips.find((t) => t.id === surveyId),
-    candidate = plan?.candidates[selected],
+    candidate = tab === "results" ? plan?.candidates[selected] : undefined,
     summary = candidate ? circuitSummary(candidate) : undefined,
     focusedStreet = candidate?.searchRoute?.stops[selectedStop] ?? candidate;
+  const openMap = useCallback(() => {
+    if (!phone.matches || mapExpanded) return;
+    if (document.activeElement instanceof HTMLElement) mapOpener.current = document.activeElement;
+    setMapExpanded(true);
+  }, [mapExpanded]);
+  function startSheetDrag(event: React.PointerEvent) {
+    draggedHandle.current = false;
+    sheetDrag.start(event);
+  }
   const selectCandidate = useCallback((index: number) => {
-    setSelected(index); setSelectedStop(0); setFocusMode("circuit"); setFocusRequest(n => n + 1); revealMap();
+    setSelected(index); setSelectedStop(0); setFocusMode("circuit"); setFocusRequest(n => n + 1);
   }, []);
   const selectStop = useCallback((index: number) => {
-    setSelectedStop(index); setFocusMode("street"); setFocusRequest(n => n + 1); revealMap();
-  }, []);
+    setSelectedStop(index); setFocusMode("street"); setFocusRequest(n => n + 1);
+    openMap();
+  }, [openMap]);
   usePlanTool(tab === "results" ? plan : null);
-  useEffect(() => { if (tab === "results") resultsTitle.current?.focus({ preventScroll: true }); }, [tab]);
+  useEffect(() => {
+    const before = previousMode.current;
+    previousMode.current = mode;
+    if (mode === before) return;
+    const opener = mapOpener.current;
+    if (before === "map" && opener?.isConnected && opener.getClientRects().length) {
+      opener.focus({ preventScroll: true });
+    } else {
+      sheet.current?.querySelector<HTMLElement>("[data-panel-focus]:not([hidden] *)")?.focus({ preventScroll: true });
+    }
+    if (before !== "map" && editMode) scroller.current?.scrollTo(0, 0);
+  }, [mode, editMode]);
+  useEffect(() => {
+    if (error && mode === "plan") searchError.current?.focus();
+  }, [error, mode]);
+  useEffect(() => {
+    if (mode !== "map") return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !document.querySelector("dialog[open]")) setMapExpanded(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mode]);
   useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => {
     try {
@@ -172,7 +209,7 @@ export default function App() {
     abortRef.current = controller;
     setSearching(true);
     setTraces([]);
-    revealMap();
+    setMapExpanded(false);
     setProgress(2);
     setStage("Reading the Paris parking inventory");
     try {
@@ -217,8 +254,7 @@ export default function App() {
   function startTrip() {
     if (!plan || !candidate) return;
     if (active) {
-      setToast("Finish your active trip before starting another.");
-      setShowHistory(true);
+      setShowDirections(true);
       return;
     }
     const trip: SavedTrip = {
@@ -230,7 +266,7 @@ export default function App() {
       modelVersion: plan.modelVersion,
     };
     if (updateTrips([trip, ...trips])) {
-      setToast("Circuit saved. Open your driving route below.");
+      setShowDirections(true);
       setReminderDismissed(null);
     }
   }
@@ -252,8 +288,9 @@ export default function App() {
     }
   }
   const due = active && parseParis(active.input.returnAt).getTime() <= clock;
+  const inspectedStreet = tab === "results" && focusMode === "street" ? focusedStreet : undefined;
   return (
-    <main className={`app ${tab === "results" ? "has-results" : ""}`}>
+    <main className={`app mode-${mode}`} style={{ "--sheet-inset": `${inset}px` } as React.CSSProperties}>
       <a className="skip-link" href="#trip-planner">Skip to planner</a>
       <header className="topbar">
         <a
@@ -261,10 +298,10 @@ export default function App() {
           href={import.meta.env.BASE_URL}
           onClick={(e) => {
             e.preventDefault();
-            if (!searching) setTab("plan");
+            if (!searching) { setMapExpanded(false); setTab("plan"); }
           }}
         >
-          <span className="brand-icon" aria-hidden="true">P<span>↗</span></span>
+          <img className="brand-icon" src={`${import.meta.env.BASE_URL}favicon.svg`} alt="" width="35" height="35" />
           <span>Park in Paris</span>
         </a>
         <nav className="top-actions" aria-label="Planner tools">
@@ -296,6 +333,7 @@ export default function App() {
         <Suspense fallback={<div className="map-loading" role="status">Loading map…</div>}>
           <MapView
             plan={tab === "results" ? plan : null}
+            sheetInset={inset}
             selected={selected}
             onSelect={selectCandidate}
             selectedStop={selectedStop}
@@ -309,22 +347,45 @@ export default function App() {
             traces={traces}
           />
         </Suspense>
-        {searching && <div className="search-display">
-            <div className="search-heading">
-              <Route size={18} aria-hidden="true" />
-              <span role="status">{stage}</span>
-              <button type="button" className="icon-button" aria-label="Cancel search" onClick={cancel}><X size={16} /></button>
-            </div>
-            <div className="search-progress" role="progressbar" aria-label="Parking search progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
-              <span style={{ width: `${Math.max(3, progress)}%` }} />
-            </div>
-        </div>}
+        {mobile && editMode && <button className="expand-map" type="button" onClick={openMap}>
+          <Maximize2 size={15} /> Full map
+        </button>}
       </section>
-      <section className="planner" id="trip-planner" key={tab} aria-label="Parking planner" tabIndex={-1}>
+      <m.section ref={sheet} layout={mobile ? "position" : false} layoutDependency={mode}
+        drag={mobile && mode !== "search" ? "y" : false} dragControls={sheetDrag} dragListener={false}
+        dragConstraints={{ top: 0, bottom: 0 }} dragMomentum={false}
+        dragElastic={mode === "map" ? { top: 0.5, bottom: 0 } : { top: 0, bottom: 0.5 }}
+        onDragEnd={(_, { offset }) => {
+          draggedHandle.current = true;
+          if (mode === "map" && offset.y < -30) setMapExpanded(false);
+          else if (editMode && offset.y > 30) openMap();
+        }}
+        className="planner" id="trip-planner" aria-label="Parking planner" tabIndex={-1}>
+        {mode === "search" && <SearchPanel stage={stage} progress={progress} cancel={cancel} />}
+        {mode === "map" && <div className="map-dock">
+          <button className="return-to-panel" type="button" data-panel-focus onPointerDown={startSheetDrag}
+            onClick={e => { if (!e.detail || !draggedHandle.current) setMapExpanded(false); }}>
+            <span className="dock-icon"><PanelBottomOpen size={21} /></span>
+            <span><strong>{inspectedStreet?.street ?? (tab === "results" ? "Show circuits" : "Show trip planner")}</strong>
+              <small>{inspectedStreet
+                ? `${inspectedStreet.capacity} mapped spaces · Show circuits`
+                : destination?.label.split(" · ")[0] ?? "Choose a destination"}</small></span>
+            <ChevronUp size={17} />
+          </button>
+          {inspectedStreet &&
+            <a className="dock-street-view" href={streetViewURL(inspectedStreet.coordinates)}
+              target="_blank" rel="noopener noreferrer" aria-label={`Street View on ${inspectedStreet.street}`}><ScanEye size={21} /><span>Street View</span></a>}
+        </div>}
+        {mobile && editMode && <button className="sheet-handle" type="button" aria-label="Expand parking map"
+          onPointerDown={startSheetDrag} onClick={e => { if (!e.detail || !draggedHandle.current) openMap(); }}><span /></button>}
+        <div ref={scroller} className="panel-scroll" hidden={!editMode}>
         {tab === "plan" ? (
-          <form onSubmit={search} noValidate>
-            <h1>Plan your trip</h1>
-            <p className="intro">Find street parking within walking distance of your destination.</p>
+          <form id="trip-form" key="plan" onSubmit={search} noValidate>
+            <div className="panel-heading">
+              <h1 tabIndex={-1} data-panel-focus>Plan your trip</h1>
+              <button type="button" className="panel-tool" title="Parking preferences" aria-label="Parking preferences"
+                aria-haspopup="dialog" onClick={() => setShowSettings(true)}><SlidersHorizontal size={18} /></button>
+            </div>
             <div className="addresses">
               <PlaceInput
                 label="From"
@@ -340,162 +401,33 @@ export default function App() {
                 disabled={searching}
               />
             </div>
-            <details className="schedule">
-              <summary><CalendarDays size={18} /><span>Trip times <small>Paris time</small></span><ChevronDown size={15} />
-                <strong>{scheduleLabel(times.departure, times.returnAt)}</strong>
-              </summary>
-              <div className="form-row">
-                <label>
-                  Leave at
-                  <input
-                    aria-label="Departure date and time, Paris time"
-                    required
-                    type="datetime-local"
-                    value={times.departure}
-                    onChange={(e) =>
-                      setTimes({ ...times, departure: e.target.value })
-                    }
-                    disabled={searching}
-                  />
-                </label>
-                <label>
-                  Back at the car
-                  <input
-                    aria-label="Return date and time, Paris time"
-                    required
-                    type="datetime-local"
-                    value={times.returnAt}
-                    onChange={(e) =>
-                      setTimes({ ...times, returnAt: e.target.value })
-                    }
-                    disabled={searching}
-                  />
-                </label>
-              </div>
-            </details>
-            <div className="walk-label">
-              <label htmlFor="max-walk">
-                <Footprints size={18} /> Maximum walk
-              </label>
-              <strong>
-                {maxWalk} <small>min</small>
-              </strong>
-            </div>
-            <input
-              id="max-walk"
-              className="walk-slider"
-              type="range"
-              min="5"
-              max="30"
-              step="5"
-              aria-valuetext={`${maxWalk} minutes`}
-              style={{ "--walk-fill": `${(maxWalk - 5) * 4}%` } as React.CSSProperties}
-              value={maxWalk}
-              onChange={(e) => setMaxWalk(Number(e.target.value))}
-              disabled={searching}
-            />
-            <div className="range-labels">
-              <span>5 min</span>
-              <span>30 min</span>
-            </div>
-            <button
-              type="button"
-              className="preferences-toggle"
-              onClick={() => setShowSettings(!showSettings)}
-              aria-expanded={showSettings}
-            >
-              <SlidersHorizontal size={14} />
-              Preferences <ChevronDown size={14} />
-            </button>
-            {showSettings ? (
-              <div className="preferences">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={rushAllowance}
-                    onChange={(e) => setRushAllowance(e.target.checked)}
-                    disabled={searching}
-                  />
-                  <span>
-                    Allow extra time for typical congestion
-                    <small>
-                      A time-of-day allowance, without live traffic.
-                    </small>
-                  </span>
-                </label>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={useExperience}
-                    onChange={(e) => setUseExperience(e.target.checked)}
-                    disabled={searching}
-                  />
-                  <span>
-                    Use my previous parking experiences
-                    <small>
-                      Small adjustments after three similar successful trips.
-                    </small>
-                  </span>
-                </label>
-              </div>
-            ) : null}
+            <ScheduleControl times={times} onChange={setTimes} />
+            <WalkControl value={maxWalk} onChange={setMaxWalk} />
             {error ? (
-              <p className="error-message" role="alert">
+              <p ref={searchError} className="error-message" role="alert" tabIndex={-1}>
                 {error}
               </p>
             ) : null}
-            <button
-              type="submit"
-              className="primary-button"
-              disabled={searching}
-            >
-              {searching ? (
-                <>
-                  <span>Finding circuits…</span>
-                  <LoaderCircle size={21} className="spin" />
-                </>
-              ) : (
-                <>
-                  Find parking circuits <ArrowRight size={18} />
-                </>
-              )}
-            </button>
-            <a className="inventory-note" href="https://opendata.paris.fr/explore/dataset/stationnement-sur-voie-publique-emprises/" target="_blank" rel="noopener noreferrer">
-              Parking data from Ville de Paris <ArrowUpRight size={12} />
-            </a>
           </form>
         ) : plan && candidate ? (
-          <>
-            <button className="back-button" onClick={() => setTab("plan")}>
-              <ArrowLeft size={16} />
-              Adjust your trip
-            </button>
-            <h1 ref={resultsTitle} tabIndex={-1}>Your circuits</h1>
-            <p className="result-destination"><MapPin size={15} />{plan.input.destination.label.split(" · ")[0]}</p>
-            <div className="result-list">
-              {plan.candidates.map((c, index) => (
-                <CircuitCard
-                  key={`${c.circuit?.strategy ?? index}:${c.searchRoute?.stops.map(stop => stop.id).join(">") ?? c.id}`}
-                  candidate={c}
-                  selected={selected === index}
-                  onSelect={() => selectCandidate(index)}
-                />
-              ))}
+          <m.div key="results" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+            <div className="panel-heading">
+              <div><h1 tabIndex={-1} data-panel-focus>Your circuits</h1>
+                <p className="result-destination"><MapPin size={14} />{plan.input.destination.label.split(" · ")[0]}</p></div>
+              <button className="panel-tool" aria-label="Adjust your trip" title="Adjust your trip" onClick={() => setTab("plan")}><Pencil size={17} /></button>
             </div>
+            <CircuitChoices candidates={plan.candidates} selected={selected} onSelect={selectCandidate} />
             {summary && <div className="circuit-summary">
               <span>Estimated time to destination</span>
               <strong>{Math.floor(summary.totalLow)}–{Math.ceil(summary.totalHigh)} <small>min</small></strong>
-              <p>Includes the {Math.ceil(candidate.driveMinutes)} min drive to the first street, parking search and walk.</p>
+              <p>{Math.ceil(candidate.driveMinutes)} min drive to the first street, then search and walk.</p>
             </div>}
-            <button className="primary-button" onClick={startTrip} disabled={!!active}>
-              {active ? "Trip in progress" : "Use this circuit"}<ArrowRight size={18} />
-            </button>
             <RouteNavigation key={candidate.id + ":" + selected} candidate={candidate} origin={plan.input.origin.coordinates} />
             <div className="street-preview">
               <h2>Streets in driving order</h2>
               <ol className="street-list">
                 {(candidate.searchRoute?.stops ?? [candidate]).map((stop, index) =>
-                  <li key={stop.id}><button onClick={() => selectStop(index)} aria-pressed={index === selectedStop}>
+                  <li key={stop.id}><button onClick={() => selectStop(index)} aria-pressed={focusMode === "street" && index === selectedStop}>
                     <span className="stop-number">{index + 1}</span><span>{stop.street}</span>
                     <small>{stop.capacity} spaces</small>
                   </button></li>
@@ -525,11 +457,33 @@ export default function App() {
                 {w}
               </p>
             ))}
-          </>
+          </m.div>
         ) : null}
-      </section>
+        </div>
+        <div className="planner-footer" hidden={!editMode}>
+          {tab === "plan" ? <m.button type="submit" form="trip-form" className="primary-button action-button"
+            key="find" whileTap={{ scale: 0.985 }}><span>Find parking circuits</span><span className="action-icon"><ArrowRight size={19} /></span></m.button>
+          : <m.button type="button" className="primary-button action-button" onClick={startTrip}
+            key="use" whileTap={{ scale: 0.985 }}><span>{active ? "Open active trip" : "Use this circuit"}</span><span className="action-icon"><ArrowRight size={19} /></span></m.button>}
+        </div>
+      </m.section>
+      <AnimatePresence>
+      {showSettings && <Modal key="preferences" title="Parking preferences" onClose={() => setShowSettings(false)}>
+        <div className="preferences">
+          <label><span>Typical congestion<small>Allow extra driving time during busy hours.</small></span>
+            <input type="checkbox" checked={rushAllowance} onChange={e => setRushAllowance(e.target.checked)} /></label>
+          <label><span>Learn from my trips<small>Adjust estimates after three similar successful trips.</small></span>
+            <input type="checkbox" checked={useExperience} onChange={e => setUseExperience(e.target.checked)} /></label>
+        </div>
+        <button className="primary-button" onClick={() => setShowSettings(false)}>Done <Check size={18} /></button>
+      </Modal>}
+      {showDirections && active && <Modal key="directions" title="Driving directions" onClose={() => setShowDirections(false)}>
+        <p className="direction-destination"><MapPin size={16} />{active.input.destination.label.split(" · ")[0]}</p>
+        <p className="dialog-hint">Your circuit is saved. Start on {active.candidate.street}.</p>
+        <RouteNavigation candidate={active.candidate} origin={active.input.origin.coordinates} />
+      </Modal>}
       {showInfo ? (
-        <Modal title="How estimates work" onClose={() => setShowInfo(false)}>
+        <Modal key="info" title="How estimates work" onClose={() => setShowInfo(false)}>
           <div className="info-copy">
             <p><strong>How circuits are chosen.</strong> We compare up to four nearby streets per circuit. More eligible spaces improve a circuit’s score. Longer drives and walks reduce it. Every counted section has a checked walking route within your limit.</p>
             <p><strong>Which circuit to pick.</strong> Golden balance weighs spaces, driving and walking together. Closest walk favours proximity. More parking options favours capacity. Similar options are combined.</p>
@@ -565,7 +519,7 @@ export default function App() {
       ) : null}
       {showHistory ? (
         <Modal
-          title="Your trips"
+          key="history" title="Your trips"
           onClose={() => setShowHistory(false)}
         >
           <div className={`sync-status ${syncStatus}`} role="status">
@@ -675,7 +629,7 @@ export default function App() {
           }}
         />
       ) : null}
-      {toast && <div className="toast" role="status">
+      {toast && <m.div key="notice" className="toast" role="status" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
             <CheckCircle2 size={18} />
             {toast}
             <button
@@ -685,7 +639,8 @@ export default function App() {
             >
               <X size={16} />
             </button>
-      </div>}
+      </m.div>}
+      </AnimatePresence>
     </main>
   );
 }

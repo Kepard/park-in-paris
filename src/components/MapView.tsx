@@ -13,21 +13,23 @@ const empty = () => ({ type: "FeatureCollection" as const, features: [] });
 const reduceMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
 const stopsFor = (candidate: Candidate) => candidate.searchRoute?.stops ?? [candidate];
 
-function padding(map: maplibregl.Map, detail = false) {
-  const small = map.getContainer().clientHeight < 440;
+function padding(map: maplibregl.Map, sheetInset: number, detail: boolean) {
+  const visible = Math.max(1, map.getContainer().clientHeight - sheetInset);
+  const small = visible < 440 || sheetInset > 0;
   return {
-    top: small ? 52 : 86, bottom: small ? 30 : 70,
+    top: Math.min(visible * 0.31, small ? 88 : 90),
+    bottom: sheetInset + Math.min(visible * 0.13, small ? 32 : 70),
     left: small ? 32 : 64, right: detail ? 64 : small ? 42 : 76,
   };
 }
 
-function fitCoordinates(map: maplibregl.Map, points: Coordinate[], detail = false) {
-  if (!points.length) return;
+function fitCoordinates(map: maplibregl.Map, points: Coordinate[], sheetInset: number, detail = false) {
+  if (!points.length || map.getContainer().clientHeight - sheetInset < 40) return;
   const bounds = new maplibregl.LngLatBounds();
   points.forEach((point) => bounds.extend(point));
   map.fitBounds(bounds, {
-    padding: padding(map, detail),
-    duration: reduceMotion() ? 0 : detail ? 1050 : 1150,
+    padding: padding(map, sheetInset, detail), absolutePadding: true,
+    duration: reduceMotion() ? 0 : detail ? 660 : 740,
     maxZoom: detail ? 18 : 15.4,
   });
 }
@@ -51,7 +53,7 @@ function bayDetails(bay: Bay) {
 
 export function MapView({
   plan, selected, selectedStop, focusRequest, focusMode, onSelect, onSelectStop,
-  destination, origin, searching, searchPhase, traces,
+  destination, origin, searching, searchPhase, traces, sheetInset,
 }: {
   plan: Plan | null;
   selected: number;
@@ -65,16 +67,16 @@ export function MapView({
   searching: boolean;
   searchPhase: "journey" | "streets";
   traces: SearchTrace[];
+  sheetInset: number;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const markers = useRef<maplibregl.Marker[]>([]);
   const popupRef = useRef<maplibregl.Popup | null>(null);
-  const camera = useRef({ plan: null as Plan | null, focusRequest: -1, selected: -1, selectedStop: -1 });
   const [ready, setReady] = useState(false);
   const [error, setError] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const [view, setView] = useState<"circuit" | "street">("circuit");
+  const view = focusMode;
   const candidate = searching ? undefined : plan?.candidates[selected];
   const stops = candidate ? stopsFor(candidate) : [];
   const focused = stops[selectedStop] ?? stops[0];
@@ -89,7 +91,6 @@ export function MapView({
         container: container.current,
         style: "https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/attenue.json",
         center: [2.349, 48.869], zoom: 13.25,
-        cooperativeGestures: matchMedia("(pointer: coarse)").matches,
         attributionControl: { compact: false, customAttribution: '<a href="https://cartes.gouv.fr/" target="_blank" rel="noopener">© IGN</a>' },
       });
     } catch {
@@ -164,10 +165,9 @@ export function MapView({
         points.push(...stop.driveFromPrevious.geometry.coordinates);
     });
     if (destination) points.push(destination.coordinates);
-    fitCoordinates(map, points);
+    fitCoordinates(map, points, sheetInset);
     popupRef.current?.remove();
-    setView("circuit");
-  }, [ready, plan, selected, destination]);
+  }, [ready, plan, selected, destination, sheetInset]);
 
   const showStreet = useCallback(() => {
     const map = mapRef.current;
@@ -175,10 +175,9 @@ export function MapView({
     if (!map || !ready || !chosen) return;
     const routeStops = stopsFor(chosen);
     const stop = routeStops[selectedStop] ?? routeStops[0];
-    fitCoordinates(map, stop.bays.length ? stop.bays.map((bay) => bay.coordinates) : [stop.coordinates], true);
+    fitCoordinates(map, stop.bays.length ? stop.bays.map((bay) => bay.coordinates) : [stop.coordinates], sheetInset, true);
     popupRef.current?.remove();
-    setView("street");
-  }, [ready, plan, selected, selectedStop]);
+  }, [ready, plan, selected, selectedStop, sheetInset]);
 
   // Data updates never move the camera. Only a new plan or an explicit selection does.
   useEffect(() => {
@@ -281,38 +280,34 @@ export function MapView({
     if (searching && origin && destination) {
       if (searchPhase === "streets") {
         // Center the destination in the unobscured map. Route arrivals never restart this camera move.
-        const mobile = map.getContainer().clientHeight < 440;
+        const mobile = sheetInset > 0 || map.getContainer().clientHeight < 440;
         map.easeTo({
           center: destination.coordinates,
-          padding: 0,
-          offset: mobile ? [0, -16] : [0, 0],
+          padding: { top: 0, bottom: sheetInset, left: 0, right: 0 },
           zoom: mobile ? 14.25 : 14.8,
-          duration: reduceMotion() ? 0 : 1600,
+          duration: reduceMotion() ? 0 : 950,
           essential: false,
         });
-      } else fitCoordinates(map, [origin.coordinates, destination.coordinates]);
+      } else fitCoordinates(map, [origin.coordinates, destination.coordinates], sheetInset);
     } else if (candidate) {
-      if (camera.current.plan !== plan || camera.current.selected !== selected) showCircuit();
-      else if (camera.current.focusRequest !== focusRequest || camera.current.selectedStop !== selectedStop) {
-        if (focusMode === "circuit") showCircuit();
-        else showStreet();
-      }
+      if (focusMode === "circuit") showCircuit();
+      else showStreet();
     } else if (destination) {
-      map.easeTo({ center: destination.coordinates, padding: 0, offset: [0, 0], duration: reduceMotion() ? 0 : 800, zoom: 14 });
+      map.easeTo({ center: destination.coordinates, padding: { top: 0, bottom: sheetInset, left: 0, right: 0 },
+        duration: reduceMotion() ? 0 : 550, zoom: 14 });
     }
-    camera.current = { plan, focusRequest, selected, selectedStop };
-  }, [ready, plan, candidate, selected, selectedStop, focusRequest, focusMode, destination, origin, searching, searchPhase, showCircuit, showStreet]);
+  }, [ready, candidate, focusRequest, focusMode, destination, origin, searching, searchPhase, showCircuit, showStreet, sheetInset]);
 
   return <>
     <div className="map-surface" ref={container} />
-    {ready && candidate && focused && !error ? <div className="map-experience-controls" aria-label="Parking map views">
+    {ready && candidate && focused && !error ? <div className="map-experience-controls" role="group" aria-label="Parking map views">
       <div className="map-view-switch">
-        <button type="button" className={view === "circuit" ? "active" : ""} onClick={showCircuit} aria-pressed={view === "circuit"}><Route size={15} /> Circuit</button>
-        <button type="button" className={view === "street" ? "active" : ""} onClick={showStreet} aria-pressed={view === "street"}><Focus size={15} /> Street</button>
+        <button type="button" className={view === "circuit" ? "active" : ""} onClick={() => onSelect(selected)} aria-pressed={view === "circuit"}><Route size={15} /> Circuit</button>
+        <button type="button" className={view === "street" ? "active" : ""} onClick={() => onSelectStop(selectedStop)} aria-pressed={view === "street"}><Focus size={15} /> Street</button>
       </div>
     </div> : null}
     {ready && destination && !candidate && !searching && <button type="button" className="map-recenter" aria-label="Recenter on destination"
-      title="Recenter on destination" onClick={() => mapRef.current?.easeTo({ center: destination.coordinates, padding: 0, zoom: 14, duration: reduceMotion() ? 0 : 600 })}>
+      title="Recenter on destination" onClick={() => mapRef.current?.easeTo({ center: destination.coordinates, padding: { top: 0, bottom: sheetInset, left: 0, right: 0 }, zoom: 14, duration: reduceMotion() ? 0 : 550 })}>
       <LocateFixed size={17} />
     </button>}
     {ready && candidate && <div className="map-legend" aria-label="Map legend">{stops.length > 1 && <span>Circuit</span>}<span>Walk</span></div>}
