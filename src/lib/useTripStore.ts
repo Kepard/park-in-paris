@@ -35,51 +35,60 @@ export function useTripStore() {
   const [trips, setTrips] = useState<SavedTrip[]>(readTrips);
   const [status, setStatus] = useState<"syncing" | "saved" | "offline">("syncing");
   const [error, setError] = useState("");
+  const [legacyMessage, setLegacyMessage] = useState("");
+  const [canImportLegacy, setCanImportLegacy] = useState(() => {
+    try { return location.hostname === "parkinparis.kepard.dev" && !localStorage.getItem(DOMAIN_MIGRATED); }
+    catch { return false; }
+  });
   const current = useRef(trips), inFlight = useRef(false), revision = useRef(0), alive = useRef(true);
   const syncRef = useRef<() => void>(() => {});
-  const sync = useCallback(async () => {
+  const sync = useCallback(async (importLegacy = false) => {
     if (inFlight.current || !alive.current) return;
     inFlight.current = true;
     setStatus("syncing"); setError("");
     let failed = false;
     try {
       const cycle = async () => {
-      const initial = await request(); // Establish the private HttpOnly cookie before any mutation.
-      if (initial.newHistory || !localStorage.getItem(MIGRATED)) {
-        const alreadyPending = new Set(pending().map(c => c.id));
-        enqueue(readTrips().filter(t => !alreadyPending.has(t.id)).map(trip => ({ id: trip.id, trip, revision: crypto.randomUUID() })));
-        localStorage.setItem(MIGRATED, "1");
-      }
-      let migrationFailed = false;
-      if (location.hostname === "parkinparis.kepard.dev" && !localStorage.getItem(DOMAIN_MIGRATED)) {
-        try {
-          // Same-site cookies identify this browser on the old host without exposing its secret.
-          const response = await fetch("https://kepard.dev/projects/park-in-paris/api/trips", {
-            credentials: "include", cache: "no-store", signal: AbortSignal.timeout(10000),
-          });
-          if (!response.ok) throw new Error("History transfer unavailable");
-          const legacy = await response.json();
-          if (!Array.isArray(legacy.trips)) throw new Error("Invalid history transfer");
-          const known = new Set([...initial.trips.map(t => t.id), ...pending().map(c => c.id)]);
-          enqueue((legacy.trips as SavedTrip[]).filter(t => !known.has(t.id)).map(trip => ({ id: trip.id, trip, revision: crypto.randomUUID() })));
-          // The outbox is durable before marking the import complete.
-          localStorage.setItem(DOMAIN_MIGRATED, "1");
-        } catch { migrationFailed = true; }
-      }
-      for (let count = 0; count < 250; count++) {
-        const change = pending().sort((a, b) => Number(!!a.trip) - Number(!!b.trip))[0];
-        if (!change) break;
-        await request(change.trip ? "PUT" : "DELETE", change);
-        acknowledge(change);
-      }
-      const version = revision.current;
-      const remote = await request();
-      if (!Array.isArray(remote.trips)) throw new Error("Invalid server response");
-      if (!pending().length && version === revision.current) {
-        cacheTrips(remote.trips); current.current = remote.trips;
-        if (alive.current) { setTrips(remote.trips); setStatus("saved"); }
-      }
-      if (migrationFailed) throw new Error("New trips are saved. Transferring history from the old address is unavailable; retry to recover it.");
+        const initial = await request(); // Establish the private HttpOnly cookie before any mutation.
+        if (initial.newHistory || !localStorage.getItem(MIGRATED)) {
+          const alreadyPending = new Set(pending().map(c => c.id));
+          enqueue(readTrips().filter(t => !alreadyPending.has(t.id)).map(trip => ({ id: trip.id, trip, revision: crypto.randomUUID() })));
+          localStorage.setItem(MIGRATED, "1");
+        }
+        if (importLegacy && location.hostname === "parkinparis.kepard.dev" && !localStorage.getItem(DOMAIN_MIGRATED)) {
+          try {
+            // Same-site cookies identify this browser on the old host without exposing its secret.
+            const response = await fetch("https://kepard.dev/projects/park-in-paris/api/trips", {
+              credentials: "include", cache: "no-store", redirect: "error", signal: AbortSignal.timeout(10000),
+            });
+            if (!response.ok) throw new Error("History transfer unavailable");
+            const legacy = await response.json();
+            if (!Array.isArray(legacy.trips)) throw new Error("Invalid history transfer");
+            const known = new Set([...initial.trips.map(t => t.id), ...pending().map(c => c.id)]);
+            enqueue((legacy.trips as SavedTrip[]).filter(t => !known.has(t.id)).map(trip => ({ id: trip.id, trip, revision: crypto.randomUUID() })));
+            // The outbox is durable before marking the import complete.
+            localStorage.setItem(DOMAIN_MIGRATED, "1");
+            setCanImportLegacy(false);
+            setLegacyMessage("Finished checking the old address for trips.");
+          } catch {
+            setLegacyMessage("The old address is unavailable. You can retry the transfer here later.");
+          }
+        }
+        let wroteChanges = false;
+        for (let count = 0; count < 250; count++) {
+          const change = pending().sort((a, b) => Number(!!a.trip) - Number(!!b.trip))[0];
+          if (!change) break;
+          await request(change.trip ? "PUT" : "DELETE", change);
+          wroteChanges = true;
+          acknowledge(change);
+        }
+        const version = revision.current;
+        const remote = wroteChanges ? await request() : initial;
+        if (!Array.isArray(remote.trips)) throw new Error("Invalid server response");
+        if (!pending().length && version === revision.current) {
+          cacheTrips(remote.trips); current.current = remote.trips;
+          if (alive.current) { setTrips(remote.trips); setStatus("saved"); }
+        }
       };
       // The lock also covers cookie creation, preventing two first-open tabs from creating competing histories.
       if (navigator.locks) await navigator.locks.request("park-in-paris-trip-sync", cycle);
@@ -113,5 +122,5 @@ export function useTripStore() {
     window.addEventListener("storage", storage);
     return () => { alive.current = false; window.removeEventListener("online", retry); window.removeEventListener("focus", retry); window.removeEventListener("storage", storage); };
   }, [sync]);
-  return { trips, saveTrips, status, error, sync };
+  return { trips, saveTrips, status, error, sync, canImportLegacy, legacyMessage };
 }

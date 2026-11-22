@@ -1,5 +1,5 @@
 import type { Bay, Candidate, CircuitStrategy, Coordinate, RouteData, SearchRoute, SearchStop, SearchTrace, TripInput } from "../types";
-import { getRoute } from "./api";
+import { getRoute, ServiceUnavailableError } from "./api";
 import { eligible, parseParis, rushFactor } from "./rules";
 import { circuitUtility } from "./circuitRanking";
 
@@ -111,8 +111,9 @@ export async function buildSearchRouteOptions(primary: Candidate, candidates: Ca
       budget.cache.set(key, transition);
       options.onTrace?.({ id: `circuit-check-${from.id}-${to.id}`, geometry: transition.geometry });
       return transition;
-    } catch {
+    } catch (error) {
       signal.throwIfAborted();
+      if (error instanceof ServiceUnavailableError) throw error;
       budget.cache.set(key, null);
       return null;
     }

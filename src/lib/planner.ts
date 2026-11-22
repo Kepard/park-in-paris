@@ -8,11 +8,11 @@ import type {
   TripInput,
   SearchTrace,
 } from "../types";
-import { getInventory, getRoute } from "./api";
+import { getInventory, getRoute, ServiceUnavailableError } from "./api";
 import { eligible, holidays, parseParis, parisParts, rushFactor } from "./rules";
 import { buildSearchRouteOptions, CIRCUIT_LIMITS, createCircuitRoutingBudget } from "./searchCircuit";
 import { circuitUtility, selectCircuitChoices } from "./circuitRanking";
-export const MODEL_VERSION = "opportunity-circuit-v3.0";
+export const MODEL_VERSION = "opportunity-circuit-v3.1";
 export const BACKUP_DISCOVERY_LIMITS = { perStart: 4, total: 12 };
 export function distance(a: Coordinate, b: Coordinate) {
   const r = Math.PI / 180,
@@ -221,15 +221,14 @@ export async function planTrip(
   const multiplier = rushFactor(departure, input.rushAllowance);
   let directDrive: number | null = null;
   progress("Tracing your journey through the streets", 3);
-  try {
-    const direct = await getRoute(input.origin.coordinates, input.destination.coordinates, "car", signal);
+  const journey = getRoute(input.origin.coordinates, input.destination.coordinates, "car", signal).then(direct => {
     directDrive = direct.duration * multiplier / 60;
     onTrace?.({ id: "direct", geometry: direct.geometry });
-  } catch {
+  }).catch(error => {
     signal.throwIfAborted();
-  }
-  progress("Reading the Paris parking inventory", 6);
-  const inventory = await getInventory();
+    if (error instanceof ServiceUnavailableError) throw error;
+  });
+  const [inventory] = await Promise.all([getInventory(), journey]);
   signal.throwIfAborted();
   const groups = groupsFor(inventory, input);
   if (!groups.length)
@@ -238,7 +237,7 @@ export async function planTrip(
     );
   const candidates: Candidate[] = [],
     warnings: string[] = [];
-  let failed = 0, routedGroups = 0;
+  let failed = 0, failedSections = 0, routedGroups = 0;
   const starts: Candidate[] = [];
   const routedIds = new Set<string>();
   async function routeGroup(g: Group) {
@@ -276,15 +275,17 @@ export async function planTrip(
       let maxWalkDuration = walk.duration;
       // Route every counted section. A centroid or a straight-line radius cannot establish a walking cap.
       for (const bay of allowed) {
-        const sectionWalk =
-          bay.id === g.id
-            ? walk
-            : await getRoute(
-                bay.coordinates,
-                input.destination.coordinates,
-                "pedestrian",
-                signal,
-              );
+        let sectionWalk = walk;
+        if (bay.id !== g.id) {
+          try {
+            sectionWalk = await getRoute(bay.coordinates, input.destination.coordinates, "pedestrian", signal);
+          } catch (error) {
+            signal.throwIfAborted();
+            if (error instanceof ServiceUnavailableError) throw error;
+            failedSections++;
+            continue;
+          }
+        }
         if (sectionWalk.duration <= input.maxWalk * 60) {
           bays.push(bay);
           maxWalkDuration = Math.max(maxWalkDuration, sectionWalk.duration);
@@ -340,7 +341,7 @@ export async function planTrip(
             : "mixed",
       });
     } catch (error) {
-      if (signal.aborted) throw error;
+      if (signal.aborted || error instanceof ServiceUnavailableError) throw error;
       failed++;
     }
   }
@@ -396,6 +397,7 @@ export async function planTrip(
       "A balance of mapped spaces, short driving connections and walking distance.";
   }
   if (failed) warnings.push(`${failed} streets could not be routed and were left out.`);
+  if (failedSections) warnings.push(`${failedSections} parking sections had no verified walking route and were excluded.`);
   progress("Your parking circuits are ready", 99);
   return {
     input,

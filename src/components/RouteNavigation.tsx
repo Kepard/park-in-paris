@@ -21,11 +21,8 @@ export function RouteNavigation({ candidate, origin }: { candidate: Candidate; o
         <MapPin size={16} />Google Maps<ExternalLink size={12} />
       </a>
     </div>
-    <p className="nav-caption">
-      {stops.length > 1 ? `Whole circuit · ${stops.length} streets in driving order` : `Directions to ${candidate.street}`}
-    </p>
-    {stops.length > 1 ? <p className="nav-provider-note">Google Maps: all stops. Waze: one street at a time.</p> : null}
-    {showWaze ? <Modal title="Your circuit with Waze." onClose={() => setShowWaze(false)}>
+    {stops.length > 1 && <p className="nav-provider-note">Google Maps opens all stops. Waze opens one street at a time.</p>}
+    {showWaze ? <Modal title="Navigate with Waze" onClose={() => setShowWaze(false)}>
       <p className="waze-intro">Waze accepts one destination at a time. Follow your circuit in order, opening the next street here if you still need a space.</p>
       <ol className="waze-stops">
         {stops.map((stop, index) => <li key={`${stop.street}-${index}`}>

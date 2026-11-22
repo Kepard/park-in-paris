@@ -6,7 +6,6 @@ import {
   Clock3,
   ArrowLeft,
   ArrowRight,
-  Car,
   CircleParking,
   LoaderCircle,
   X,
@@ -15,18 +14,17 @@ import {
   Download,
   Trash2,
   SlidersHorizontal,
+  CalendarDays,
+  ChevronDown,
   CheckCircle2,
-  Sparkles,
   ScanEye,
 } from "lucide-react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { PlaceInput } from "./components/PlaceInput";
-import { MapView } from "./components/MapView";
 import { Modal } from "./components/Modal";
 import { SurveyForm } from "./components/SurveyForm";
 import { RouteNavigation } from "./components/RouteNavigation";
-import { CircuitCard, walkingRange } from "./components/CircuitCard";
+import { CircuitCard } from "./components/CircuitCard";
 import { CIRCUIT_LABELS, circuitSummary } from "./lib/circuitSummary";
 import { GARNIER, MONTREUIL, navigationURL, streetViewURL } from "./lib/api";
 import { defaultTimes, parseParis } from "./lib/rules";
@@ -36,6 +34,23 @@ import { useTripStore } from "./lib/useTripStore";
 import { usePlanTool } from "./lib/usePlanTool";
 import type { Place, Plan, SavedTrip, Survey, TripInput, SearchTrace } from "./types";
 
+const MapView = lazy(() => import("./components/MapView")
+  .then(module => ({ default: module.MapView }))
+  .catch(() => ({ default: () => <div className="map-error" role="status">
+    <strong>Map unavailable</strong><span>You can still compare circuits and open directions.</span>
+  </div> })));
+const inventoryVersion = import.meta.env.VITE_INVENTORY_VERSION;
+
+function scheduleLabel(departure: string, returnAt: string) {
+  try {
+    const start = parseParis(departure), end = parseParis(returnAt);
+    const format = (date: Date, showDate: boolean) => new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Europe/Paris", ...(showDate && { day: "numeric", month: "short" }),
+      hour: "2-digit", minute: "2-digit",
+    }).format(date);
+    return `${format(start, true)} → ${format(end, departure.slice(0, 10) !== returnAt.slice(0, 10))}`;
+  } catch { return "Choose departure and return times"; }
+}
 const formatDate = (iso: string) =>
   new Intl.DateTimeFormat("en-GB", {
     day: "numeric",
@@ -44,20 +59,23 @@ const formatDate = (iso: string) =>
   }).format(new Date(iso));
 function initialPrefs() {
   try {
-    return JSON.parse(
-      localStorage.getItem("park-in-paris.preferences.v1") || "{}",
-    );
+    const saved = JSON.parse(localStorage.getItem("park-in-paris.preferences.v1") || "{}");
+    return saved && typeof saved === "object" ? saved : {};
   } catch {
     return {};
   }
 }
+function revealMap() {
+  if (innerWidth <= 760) window.scrollTo({ top: 0, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+}
+
 export default function App() {
-  const { trips, saveTrips, status: syncStatus, error: syncError, sync } = useTripStore();
+  const { trips, saveTrips, status: syncStatus, error: syncError, sync, canImportLegacy, legacyMessage } = useTripStore();
   const [origin, setOrigin] = useState<Place | null>(MONTREUIL),
     [destination, setDestination] = useState<Place | null>(GARNIER),
     [times, setTimes] = useState(defaultTimes),
     [prefs] = useState(initialPrefs),
-    [maxWalk, setMaxWalk] = useState<number>(Number(prefs.maxWalk) || 30),
+    [maxWalk, setMaxWalk] = useState<number>([5, 10, 15, 20, 25, 30].includes(prefs.maxWalk) ? prefs.maxWalk : 30),
     [rushAllowance, setRushAllowance] = useState(prefs.rushAllowance !== false),
     [useExperience, setUseExperience] = useState(prefs.useExperience !== false);
   const [plan, setPlan] = useState<Plan | null>(null),
@@ -78,23 +96,21 @@ export default function App() {
     [toast, setToast] = useState(""),
     [reminderDismissed, setReminderDismissed] = useState<string | null>(null),
     [clock, setClock] = useState(Date.now());
-  const abortRef = useRef<AbortController | null>(null),
-    reduceMotion = useReducedMotion();
+  const abortRef = useRef<AbortController | null>(null);
+  const resultsTitle = useRef<HTMLHeadingElement>(null);
   const active = trips.find((t) => t.status === "active"),
     surveyTrip = trips.find((t) => t.id === surveyId),
     candidate = plan?.candidates[selected],
     summary = candidate ? circuitSummary(candidate) : undefined,
     focusedStreet = candidate?.searchRoute?.stops[selectedStop] ?? candidate;
-  const revealMap = useCallback(() => {
-    if (innerWidth <= 760) window.scrollTo({ top: 0, behavior: reduceMotion ? "instant" : "smooth" });
-  }, [reduceMotion]);
   const selectCandidate = useCallback((index: number) => {
     setSelected(index); setSelectedStop(0); setFocusMode("circuit"); setFocusRequest(n => n + 1); revealMap();
-  }, [revealMap]);
+  }, []);
   const selectStop = useCallback((index: number) => {
     setSelectedStop(index); setFocusMode("street"); setFocusRequest(n => n + 1); revealMap();
-  }, [revealMap]);
+  }, []);
   usePlanTool(tab === "results" ? plan : null);
+  useEffect(() => { if (tab === "results") resultsTitle.current?.focus({ preventScroll: true }); }, [tab]);
   useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => {
     try {
@@ -112,8 +128,10 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [toast]);
   useEffect(() => {
+    if (!active) return;
     const update = () => setClock(Date.now()),
       timer = setInterval(update, 15000);
+    update();
     window.addEventListener("focus", update);
     document.addEventListener("visibilitychange", update);
     return () => {
@@ -121,7 +139,7 @@ export default function App() {
       window.removeEventListener("focus", update);
       document.removeEventListener("visibilitychange", update);
     };
-  }, []);
+  }, [active?.id]);
   useEffect(() => {
     if (
       active &&
@@ -154,7 +172,7 @@ export default function App() {
     abortRef.current = controller;
     setSearching(true);
     setTraces([]);
-    if (innerWidth <= 760) window.scrollTo({ top: 0, behavior: reduceMotion ? "instant" : "smooth" });
+    revealMap();
     setProgress(2);
     setStage("Reading the Paris parking inventory");
     try {
@@ -230,26 +248,13 @@ export default function App() {
     );
     if (updateTrips(next)) {
       setSurveyId(null);
-      setToast("Experience saved. Thank you for making the next trip better.");
+      setToast("Parking experience saved.");
     }
   }
   const due = active && parseParis(active.input.returnAt).getTime() <= clock;
   return (
     <main className={`app ${tab === "results" ? "has-results" : ""}`}>
-      <MapView
-        plan={tab === "results" ? plan : null}
-        selected={selected}
-        onSelect={selectCandidate}
-        selectedStop={selectedStop}
-        onSelectStop={selectStop}
-        focusRequest={focusRequest}
-        focusMode={focusMode}
-        destination={destination}
-        origin={origin}
-        searching={searching}
-        searchPhase={progress >= 8 ? "streets" : "journey"}
-        traces={traces}
-      />
+      <a className="skip-link" href="#trip-planner">Skip to planner</a>
       <header className="topbar">
         <a
           className="brand"
@@ -259,26 +264,21 @@ export default function App() {
             if (!searching) setTab("plan");
           }}
         >
-          <span className="brand-icon">
-            P<span>↗</span>
-          </span>
-          <span>
-            park in paris
-            <span className="brand-caption">
-              A LITTLE WALK. A BETTER ARRIVAL.
-            </span>
-          </span>
+          <span className="brand-icon" aria-hidden="true">P<span>↗</span></span>
+          <span>Park in Paris</span>
         </a>
-        <span className="edition">
-          PARIS, FRANCE <span>48.8566° N · 2.3522° E</span>
-        </span>
-        <button className="history-button" onClick={() => setShowHistory(true)}>
-          <Clock3 size={17} />
-          Your trips
-          {trips.length ? (
-            <span className="count-badge">{trips.length}</span>
-          ) : null}
-        </button>
+        <nav className="top-actions" aria-label="Planner tools">
+          <button className="help-button" onClick={() => setShowInfo(true)} aria-label="How estimates work">
+            <Info size={16} /><span>How it works</span>
+          </button>
+          <button className="history-button" onClick={() => setShowHistory(true)}>
+            <Clock3 size={17} />
+            Your trips
+            {trips.length ? (
+              <span className="count-badge">{trips.length}</span>
+            ) : null}
+          </button>
+        </nav>
       </header>
       {active ? (
         <div className="active-trip-bar">
@@ -292,40 +292,58 @@ export default function App() {
           </button>
         </div>
       ) : null}
-      <AnimatePresence mode="wait">
-        <motion.section
-          className="planner"
-          key={tab}
-          initial={reduceMotion ? false : { opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={reduceMotion ? undefined : { opacity: 0, y: -8 }}
-          transition={{ duration: 0.25 }}
-        >
-          {tab === "plan" ? (
-            <form onSubmit={search}>
-              <div className="eyebrow">
-                <span className="small-dot" />
-                PARIS STREET PARKING
-              </div>
-              <h1>Where to?</h1>
-              <p className="intro">
-                Find your parking circuit.
-                <br />
-                Make the rest a Parisian walk.
-              </p>
+      <section className="map-pane" aria-label="Parking map">
+        <Suspense fallback={<div className="map-loading" role="status">Loading map…</div>}>
+          <MapView
+            plan={tab === "results" ? plan : null}
+            selected={selected}
+            onSelect={selectCandidate}
+            selectedStop={selectedStop}
+            onSelectStop={selectStop}
+            focusRequest={focusRequest}
+            focusMode={focusMode}
+            destination={destination}
+            origin={origin}
+            searching={searching}
+            searchPhase={progress >= 8 ? "streets" : "journey"}
+            traces={traces}
+          />
+        </Suspense>
+        {searching && <div className="search-display">
+            <div className="search-heading">
+              <Route size={18} aria-hidden="true" />
+              <span role="status">{stage}</span>
+              <button type="button" className="icon-button" aria-label="Cancel search" onClick={cancel}><X size={16} /></button>
+            </div>
+            <div className="search-progress" role="progressbar" aria-label="Parking search progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+              <span style={{ width: `${Math.max(3, progress)}%` }} />
+            </div>
+        </div>}
+      </section>
+      <section className="planner" id="trip-planner" key={tab} aria-label="Parking planner" tabIndex={-1}>
+        {tab === "plan" ? (
+          <form onSubmit={search} noValidate>
+            <h1>Plan your trip</h1>
+            <p className="intro">Find street parking within walking distance of your destination.</p>
+            <div className="addresses">
               <PlaceInput
-                label="STARTING FROM"
+                label="From"
                 value={origin}
                 onChange={setOrigin}
                 origin
                 disabled={searching}
               />
               <PlaceInput
-                label="YOUR DESTINATION"
+                label="Destination"
                 value={destination}
                 onChange={setDestination}
                 disabled={searching}
               />
+            </div>
+            <details className="schedule">
+              <summary><CalendarDays size={18} /><span>Trip times <small>Paris time</small></span><ChevronDown size={15} />
+                <strong>{scheduleLabel(times.departure, times.returnAt)}</strong>
+              </summary>
               <div className="form-row">
                 <label>
                   Leave at
@@ -354,305 +372,170 @@ export default function App() {
                   />
                 </label>
               </div>
-              <span className="timezone-note">All times are Paris time.</span>
-              <div className="walk-label">
-                <label htmlFor="max-walk">
-                  <Footprints size={18} /> A little room to walk
-                </label>
-                <strong>
-                  {maxWalk} <small>min max</small>
-                </strong>
-              </div>
-              <input
-                id="max-walk"
-                className="walk-slider"
-                type="range"
-                min="5"
-                max="30"
-                step="5"
-                value={maxWalk}
-                onChange={(e) => setMaxWalk(Number(e.target.value))}
-                disabled={searching}
-              />
-              <div className="range-labels">
-                <span>5 MIN</span>
-                <span>30 MIN</span>
-              </div>
-              <button
-                type="button"
-                className="preferences-toggle"
-                onClick={() => setShowSettings(!showSettings)}
-                aria-expanded={showSettings}
-              >
-                <SlidersHorizontal size={14} />
-                Planning preferences <span>{showSettings ? "−" : "+"}</span>
-              </button>
-              {showSettings ? (
-                <div className="preferences">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={rushAllowance}
-                      onChange={(e) => setRushAllowance(e.target.checked)}
-                      disabled={searching}
-                    />
-                    <span>
-                      Allow extra time for typical congestion
-                      <small>
-                        A time-of-day allowance, without live traffic.
-                      </small>
-                    </span>
-                  </label>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={useExperience}
-                      onChange={(e) => setUseExperience(e.target.checked)}
-                      disabled={searching}
-                    />
-                    <span>
-                      Use my previous parking experiences
-                      <small>
-                        Small adjustments after three similar successful trips.
-                      </small>
-                    </span>
-                  </label>
-                </div>
-              ) : null}
-              {error ? (
-                <p className="error-message" role="alert">
-                  {error}
-                </p>
-              ) : null}
-              <button
-                type="submit"
-                className="primary-button"
-                disabled={searching}
-              >
-                {searching ? (
-                  <>
-                    <span>Finding your best arrival</span>
-                    <LoaderCircle size={21} className="spin" />
-                  </>
-                ) : (
-                  <>
-                    Find my parking <ArrowUpRight size={21} />
-                  </>
-                )}
-              </button>
-              {searching ? (
-                <button
-                  className="text-button cancel-search"
-                  type="button"
-                  onClick={cancel}
-                >
-                  Cancel search
-                </button>
-              ) : (
-                <div className="planner-note">
-                  <Route size={16} />
-                  <span>More spaces. A short circuit. A little walk.</span>
-                </div>
-              )}
-              <div className="source-note">
-                <span>OPEN CITY DATA</span>
-                <button type="button" onClick={() => setShowInfo(true)}>
-                  How estimates work <Info size={13} />
-                </button>
-              </div>
-            </form>
-          ) : plan && candidate ? (
-            <>
-              <button className="back-button" onClick={() => setTab("plan")}>
-                <ArrowLeft size={16} />
-                Adjust your trip
-              </button>
-              <div className="eyebrow result-eyebrow">A FEW STREETS. MORE POSSIBILITIES.</div>
-              <h1 className="result-title">
-                Your way to a space.
-              </h1>
-              <p className="result-destination">
-                <MapPin size={15} />
-                {plan.input.destination.label.split(" · ")[0]}
-              </p>
-              <div className="estimate-label">
-                <Info size={13} />
-                Choose a circuit · explore every street on the map
-              </div>
-              <p className="circuit-results-note">Mapped spaces, a compact drive, and your walk — choose the balance that suits you.</p>
-              <div className="result-list">
-                {plan.candidates.map((c, index) => (
-                  <CircuitCard
-                    key={`${c.circuit?.strategy ?? index}:${c.searchRoute?.stops.map(stop => stop.id).join(">") ?? c.id}`}
-                    candidate={c}
-                    selected={selected === index}
-                    onSelect={() => selectCandidate(index)}
-                  />
-                ))}
-              </div>
-              {summary ? <div className="circuit-summary">
-                <p><Car size={14} /><strong>{Math.ceil(candidate.driveMinutes)} min to the circuit</strong></p>
-                <small>{Math.floor(summary.totalLow)}–{Math.ceil(summary.totalHigh)} min to your destination, including driving, searching and walking.</small>
-                <small className="circuit-finish-note">Follow the streets in order. Stop as soon as you find a space — there’s no need to finish the circuit.</small>
-              </div> : null}
-              <div className="selected-detail">
-                <span className="circuit-preview-label">STREET PREVIEW · SELECT A NUMBER ON THE MAP</span>
-                <span><CircleParking size={14} />{focusedStreet?.street} · {focusedStreet?.parkingType === "paid" ? "paid parking" : focusedStreet?.parkingType === "mixed" ? "mixed parking" : "eligible free / shared bays"}</span>
-                {focusedStreet?.sharedCapacity ? <span>{focusedStreet.sharedCapacity} shared delivery spaces eligible for this stay.</span> : null}
-                {candidate.learnedFrom ? <span><Sparkles size={13} />Adjusted using {candidate.learnedFrom} similar first-street visits.</span> : null}
-              </div>
-              <RouteNavigation key={`${candidate.circuit?.strategy ?? "legacy"}:${candidate.searchRoute?.stops.map(stop => stop.id).join(">") ?? candidate.id}`} candidate={candidate} origin={plan.input.origin.coordinates} />
-              <a className="street-view-link" href={streetViewURL(focusedStreet!.coordinates)} target="_blank" rel="noopener noreferrer">
-                <ScanEye size={18} /> Preview {focusedStreet?.street} in Street View <ArrowUpRight size={16} />
-              </a>
-              <button
-                className="primary-button"
-                onClick={startTrip}
-                disabled={!!active}
-              >
-                {active ? "Trip in progress" : "Use this circuit"}
-                <ArrowUpRight size={20} />
-              </button>
-              <a
-                className="walk-link"
-                href={navigationURL(
-                  "google",
-                  plan.input.destination.coordinates,
-                  focusedStreet!.coordinates,
-                  true,
-                )}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <Footprints size={14} />
-                Walk from this street to your destination <ArrowRight size={13} />
-              </a>
-              <p className="result-caveat">
-                Spaces are mapped, not confirmed empty. Check street signs when
-                you park.
-              </p>
-              <div className="source-note">
-                <span>{plan.compared} AREAS COMPARED</span>
-                <button onClick={() => setShowInfo(true)}>
-                  About these estimates <Info size={13} />
-                </button>
-              </div>
-              {plan.warnings.map((w) => (
-                <p className="field-error" key={w}>
-                  {w}
-                </p>
-              ))}
-            </>
-          ) : null}
-        </motion.section>
-      </AnimatePresence>
-      <AnimatePresence>
-        {searching ? (
-          <motion.div
-            className="search-display"
-            role="status"
-            aria-live="polite"
-            initial={reduceMotion ? false : { opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={reduceMotion ? undefined : { opacity: 0, y: -6 }}
-          >
-            <div className="search-heading"><span className="search-sigil" aria-hidden="true"><Route size={20} /></span><span className="eyebrow">A LITTLE EXPLORING</span><span className="search-percent" aria-hidden="true">{progress}%</span></div>
-            <h2>Finding your way to a space.</h2>
-            <p>{stage}</p>
-            <div className="search-progress" role="progressbar" aria-label="Parking search progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
-              <span style={{ width: `${Math.max(5, progress)}%` }} />
+            </details>
+            <div className="walk-label">
+              <label htmlFor="max-walk">
+                <Footprints size={18} /> Maximum walk
+              </label>
+              <strong>
+                {maxWalk} <small>min</small>
+              </strong>
             </div>
-            <div className="search-phases" aria-hidden="true"><span className={progress >= 6 ? "reached" : ""}>Map spaces</span><span className={progress >= 30 ? "reached" : ""}>Connect streets</span><span className={progress >= 88 ? "reached" : ""}>Compare circuits</span></div>
-            <small>Following real roads. Keeping your walk in reach.</small>
-          </motion.div>
+            <input
+              id="max-walk"
+              className="walk-slider"
+              type="range"
+              min="5"
+              max="30"
+              step="5"
+              aria-valuetext={`${maxWalk} minutes`}
+              style={{ "--walk-fill": `${(maxWalk - 5) * 4}%` } as React.CSSProperties}
+              value={maxWalk}
+              onChange={(e) => setMaxWalk(Number(e.target.value))}
+              disabled={searching}
+            />
+            <div className="range-labels">
+              <span>5 min</span>
+              <span>30 min</span>
+            </div>
+            <button
+              type="button"
+              className="preferences-toggle"
+              onClick={() => setShowSettings(!showSettings)}
+              aria-expanded={showSettings}
+            >
+              <SlidersHorizontal size={14} />
+              Preferences <ChevronDown size={14} />
+            </button>
+            {showSettings ? (
+              <div className="preferences">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={rushAllowance}
+                    onChange={(e) => setRushAllowance(e.target.checked)}
+                    disabled={searching}
+                  />
+                  <span>
+                    Allow extra time for typical congestion
+                    <small>
+                      A time-of-day allowance, without live traffic.
+                    </small>
+                  </span>
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={useExperience}
+                    onChange={(e) => setUseExperience(e.target.checked)}
+                    disabled={searching}
+                  />
+                  <span>
+                    Use my previous parking experiences
+                    <small>
+                      Small adjustments after three similar successful trips.
+                    </small>
+                  </span>
+                </label>
+              </div>
+            ) : null}
+            {error ? (
+              <p className="error-message" role="alert">
+                {error}
+              </p>
+            ) : null}
+            <button
+              type="submit"
+              className="primary-button"
+              disabled={searching}
+            >
+              {searching ? (
+                <>
+                  <span>Finding circuits…</span>
+                  <LoaderCircle size={21} className="spin" />
+                </>
+              ) : (
+                <>
+                  Find parking circuits <ArrowRight size={18} />
+                </>
+              )}
+            </button>
+            <a className="inventory-note" href="https://opendata.paris.fr/explore/dataset/stationnement-sur-voie-publique-emprises/" target="_blank" rel="noopener noreferrer">
+              Parking data from Ville de Paris <ArrowUpRight size={12} />
+            </a>
+          </form>
+        ) : plan && candidate ? (
+          <>
+            <button className="back-button" onClick={() => setTab("plan")}>
+              <ArrowLeft size={16} />
+              Adjust your trip
+            </button>
+            <h1 ref={resultsTitle} tabIndex={-1}>Your circuits</h1>
+            <p className="result-destination"><MapPin size={15} />{plan.input.destination.label.split(" · ")[0]}</p>
+            <div className="result-list">
+              {plan.candidates.map((c, index) => (
+                <CircuitCard
+                  key={`${c.circuit?.strategy ?? index}:${c.searchRoute?.stops.map(stop => stop.id).join(">") ?? c.id}`}
+                  candidate={c}
+                  selected={selected === index}
+                  onSelect={() => selectCandidate(index)}
+                />
+              ))}
+            </div>
+            {summary && <div className="circuit-summary">
+              <span>Estimated time to destination</span>
+              <strong>{Math.floor(summary.totalLow)}–{Math.ceil(summary.totalHigh)} <small>min</small></strong>
+              <p>Includes the {Math.ceil(candidate.driveMinutes)} min drive to the first street, parking search and walk.</p>
+            </div>}
+            <button className="primary-button" onClick={startTrip} disabled={!!active}>
+              {active ? "Trip in progress" : "Use this circuit"}<ArrowRight size={18} />
+            </button>
+            <RouteNavigation key={candidate.id + ":" + selected} candidate={candidate} origin={plan.input.origin.coordinates} />
+            <div className="street-preview">
+              <h2>Streets in driving order</h2>
+              <ol className="street-list">
+                {(candidate.searchRoute?.stops ?? [candidate]).map((stop, index) =>
+                  <li key={stop.id}><button onClick={() => selectStop(index)} aria-pressed={index === selectedStop}>
+                    <span className="stop-number">{index + 1}</span><span>{stop.street}</span>
+                    <small>{stop.capacity} spaces</small>
+                  </button></li>
+                )}
+              </ol>
+              {focusedStreet && <>
+                <p className="parking-type"><CircleParking size={15} />{focusedStreet.parkingType === "paid" ? "Paid parking" : focusedStreet.parkingType === "mixed" ? "Mixed parking" : "Free or shared parking"}
+                  {focusedStreet.sharedCapacity ? ` · ${focusedStreet.sharedCapacity} shared delivery spaces` : ""}</p>
+                <div className="street-links">
+                  <a href={streetViewURL(focusedStreet.coordinates)} aria-label={`Street View on ${focusedStreet.street}`} target="_blank" rel="noopener noreferrer"><ScanEye size={15} /> Street View <ArrowUpRight size={13} /></a>
+                  <a href={navigationURL("google", plan.input.destination.coordinates, focusedStreet.coordinates, true)} aria-label={`Walk from ${focusedStreet.street} to your destination`} target="_blank" rel="noopener noreferrer"><Footprints size={15} /> Walking route <ArrowUpRight size={13} /></a>
+                </div>
+              </>}
+            </div>
+            {candidate.learnedFrom > 0 && <p className="result-caveat">Adjusted using {candidate.learnedFrom} similar first-street visits.</p>}
+            <p className="result-caveat">
+              Counts show mapped capacity. Check availability and signs when you park.
+            </p>
+            <div className="source-note">
+              <span>{plan.compared} areas compared</span>
+              <button onClick={() => setShowInfo(true)}>
+                About these estimates <Info size={13} />
+              </button>
+            </div>
+            {plan.warnings.map((w) => (
+              <p className="field-error" key={w}>
+                {w}
+              </p>
+            ))}
+          </>
         ) : null}
-      </AnimatePresence>
-      {!searching ? (
-        <div className="map-caption">
-          <span className="map-caption-icon">
-            {candidate && tab === "results" ? (
-              <Route size={19} />
-            ) : (
-              <MapPin size={19} />
-            )}
-          </span>
-          <div>
-            <strong>
-              {candidate && tab === "results"
-                ? candidate.circuit ? CIRCUIT_LABELS[candidate.circuit.strategy] : "Explore your parking circuit"
-                : "A city of possibilities."}
-            </strong>
-            <span>
-              {candidate && tab === "results"
-                ? `${summary?.capacity} mapped spaces · ${walkingRange(summary!.walkMin, summary!.walkMax)} min walk · tap a street number to inspect`
-                : "Pick a destination. We’ll take it from here."}
-            </span>
-          </div>
-        </div>
-      ) : null}
+      </section>
       {showInfo ? (
-        <Modal title="A little clarity." onClose={() => setShowInfo(false)}>
+        <Modal title="How estimates work" onClose={() => setShowInfo(false)}>
           <div className="info-copy">
-            <p>
-              <strong>Compare whole circuits.</strong> We look for more distinct
-              eligible spaces along short driving routes, close to your
-              destination. A parking section counts once, even if streets overlap.
-              Every counted section stays within your walking limit. More mapped
-              spaces give you more places to check; they do not tell us how many
-              are empty.
-            </p>
-            <p>
-              <strong>Three ways to arrive.</strong> Golden balance weighs mapped
-              spaces, driving distance and walking together. Closest walk puts
-              proximity first; more parking options favours greater mapped supply.
-              We show fewer choices when the alternatives are too similar.
-              These are planning tradeoffs, not measured odds or safety ratings.
-            </p>
-            <p>
-              <strong>Open routing.</strong> Driving and walking routes come
-              from IGN’s BD TOPO / OSRM service. When enabled, a simple 10–35%
-              time-of-day allowance is added to driving. This is a planning
-              assumption, not live or measured historical traffic.
-            </p>
-            <p>
-              <strong>Drive until you find a space.</strong> The circuit gives you
-              up to four streets in driving order, with short connections between
-              them. You can stop on any street; you do not need to complete a loop.
-              The total time range covers finding a space early or continuing
-              along the circuit, then walking. It is a scenario range, not a
-              guaranteed arrival time.
-            </p>
-            <p>
-              <strong>A useful route, with nearby spaces.</strong> Circuit distance
-              measures the connections between street stopping points. Counted
-              parking sections can lie nearby along those streets; the route does
-              not promise to pass every individual space.
-            </p>
-            <p>
-              <strong>An early parking model.</strong> Search scenarios use
-              eligible capacity, district and time of day. They are uncalibrated
-              assumptions, not probabilities or confidence intervals. Three or
-              more similar successful trips allow a small personal adjustment;
-              abandoned attempts are saved separately for future modelling.
-            </p>
-            <p>
-              <strong>Rules first.</strong> Shared livraison bays count only
-              when permitted for the whole stay. Permanent delivery bays, custom
-              hours, markets and the two Bois are excluded. Paid visitor stays
-              over six hours are excluded. Temporary works and street-sign
-              changes may be missing.
-            </p>
-            <p>
-              <strong>Walking is routed.</strong> Times use IGN’s walking pace.
-              Your final walk can vary with the exact space you find.
-            </p>
-            <p>
-              <strong>Private, server-saved history.</strong> Trips and feedback
-              sync to our database using a private browser identifier, with no
-              login. A local copy keeps changes safe while offline. Clearing
-              cookies loses access to this history; export before changing
-              browsers. Reminders appear when you return to the app.
-            </p>
+            <p><strong>How circuits are chosen.</strong> We compare up to four nearby streets per circuit. More eligible spaces improve a circuit’s score. Longer drives and walks reduce it. Every counted section has a checked walking route within your limit.</p>
+            <p><strong>Which circuit to pick.</strong> Golden balance weighs spaces, driving and walking together. Closest walk favours proximity. More parking options favours capacity. Similar options are combined.</p>
+            <p><strong>What the times mean.</strong> The range covers parking on an early or later street, then walking. Search time uses mapped capacity, district and time of day. Optional congestion adds 10–35% to the drive. Live occupancy and traffic are unavailable.</p>
+            <p><strong>Parking rules.</strong> Shared delivery bays must allow parking for your whole stay. Permanent delivery bays, special hours and the two Bois are excluded. The planner limits paid visitor stays to six hours. Check the signs for temporary changes.</p>
+            <p><strong>Your trips.</strong> History and feedback sync privately in this browser. Three similar first-street successes can adjust a future estimate. Export your trips before clearing browser data.</p>
             <div className="source-links">
               <a
                 href="https://opendata.paris.fr/explore/dataset/stationnement-sur-voie-publique-emprises/"
@@ -675,19 +558,14 @@ export default function App() {
               >
                 Official parking rules <ExternalLink size={13} />
               </a>
-              {plan ? (
-                <span>
-                  Inventory imported {formatDate(plan.inventoryDate)} ·{" "}
-                  {plan.modelVersion}
-                </span>
-              ) : null}
+              <span>{plan ? "Inventory used for this trip" : "Bundled inventory"} · {formatDate(plan?.inventoryDate ?? inventoryVersion)} {new Date(plan?.inventoryDate ?? inventoryVersion).getUTCFullYear()}</span>
             </div>
           </div>
         </Modal>
       ) : null}
       {showHistory ? (
         <Modal
-          title="Your little journeys."
+          title="Your trips"
           onClose={() => setShowHistory(false)}
         >
           <div className={`sync-status ${syncStatus}`} role="status">
@@ -696,10 +574,16 @@ export default function App() {
             {syncStatus === "offline" ? <button onClick={() => void sync()}>Retry</button> : null}
           </div>
           {syncError ? <p className="field-error">{syncError}</p> : null}
+          {canImportLegacy && <details className="legacy-import">
+            <summary>Trips from the old address</summary>
+            <p>If you used the planner on kepard.dev, you can try recovering that browser’s history.</p>
+            <button className="text-button" disabled={syncStatus === "syncing"} onClick={() => void sync(true)}>Check old address <ArrowRight size={14} /></button>
+          </details>}
+          {legacyMessage && <p className="field-error" role="status">{legacyMessage}</p>}
           {trips.length ? (
             <>
               <p className="history-intro">
-                Your plans and experiences. No login; linked to this browser.
+                Plans and parking feedback saved for this browser.
               </p>
               <div className="trip-list">
                 {trips.map((t) => (
@@ -765,7 +649,7 @@ export default function App() {
           ) : (
             <div className="empty-history">
               <Route size={40} />
-              <h3>Your next trip starts here.</h3>
+              <h3>No saved trips yet</h3>
               <p>
                 Choose a parking plan, then save your experience when you
                 return.
@@ -791,15 +675,7 @@ export default function App() {
           }}
         />
       ) : null}
-      <AnimatePresence>
-        {toast ? (
-          <motion.div
-            className="toast"
-            role="status"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 20 }}
-          >
+      {toast && <div className="toast" role="status">
             <CheckCircle2 size={18} />
             {toast}
             <button
@@ -809,9 +685,7 @@ export default function App() {
             >
               <X size={16} />
             </button>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
+      </div>}
     </main>
   );
 }

@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   CornerDownRight,
   Flag,
-  Sparkles,
 } from "lucide-react";
 import type { SavedTrip, Survey } from "../types";
 import { Modal } from "./Modal";
@@ -76,18 +75,8 @@ export function SurveyForm({
   }
   return (
     <Modal title="How did parking go?" onClose={onClose}>
-      <div className="survey-intro">
-        <span className="survey-icon">
-          <Sparkles size={23} />
-        </span>
-        <p>
-          A few seconds now.
-          <br />
-          <strong>Better parking estimates later.</strong>
-        </p>
-      </div>
       <p className="survey-street">
-        Your plan: {trip.candidate.circuit ? CIRCUIT_LABELS[trip.candidate.circuit.strategy] : trip.candidate.street}
+        {trip.candidate.circuit ? CIRCUIT_LABELS[trip.candidate.circuit.strategy] : trip.candidate.street}
         {routeStops && routeStops.length > 1 ? ` · ${routeStops.length} streets` : ""}
       </p>
       <form onSubmit={submit}>
@@ -221,7 +210,7 @@ export function SurveyForm({
           Save my experience <Check size={19} />
         </button>
         <p className="privacy-note">
-          Saved privately on the server, linked to this browser. Export your trips any time.
+          Your feedback is linked to this browser’s trip history.
         </p>
       </form>
     </Modal>

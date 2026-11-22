@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Focus, Route } from "lucide-react";
+import { Focus, LocateFixed, Route } from "lucide-react";
 import * as maplibregl from "maplibre-gl";
 import mapWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -14,10 +14,11 @@ const reduceMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matche
 const stopsFor = (candidate: Candidate) => candidate.searchRoute?.stops ?? [candidate];
 
 function padding(map: maplibregl.Map, detail = false) {
-  const mobile = window.innerWidth < 760;
-  return mobile
-    ? { top: detail ? 182 : 130, bottom: Math.max(105, map.getContainer().clientHeight - 380), left: 38, right: 38 }
-    : { top: detail ? 180 : 140, bottom: 135, left: 485, right: 90 };
+  const small = map.getContainer().clientHeight < 440;
+  return {
+    top: small ? 52 : 86, bottom: small ? 30 : 70,
+    left: small ? 32 : 64, right: detail ? 64 : small ? 42 : 76,
+  };
 }
 
 function fitCoordinates(map: maplibregl.Map, points: Coordinate[], detail = false) {
@@ -72,35 +73,40 @@ export function MapView({
   const camera = useRef({ plan: null as Plan | null, focusRequest: -1, selected: -1, selectedStop: -1 });
   const [ready, setReady] = useState(false);
   const [error, setError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const [view, setView] = useState<"circuit" | "street">("circuit");
   const candidate = searching ? undefined : plan?.candidates[selected];
   const stops = candidate ? stopsFor(candidate) : [];
   const focused = stops[selectedStop] ?? stops[0];
-  const summary = candidate ? circuitSummary(candidate) : null;
-  const walkMin = summary ? Math.ceil(summary.walkMin) : 0;
-  const walkMax = summary ? Math.ceil(summary.walkMax) : 0;
-  const circuitLabel = candidate?.circuit ? CIRCUIT_LABELS[candidate.circuit.strategy] : "Parking circuit";
   useSearchRays(mapRef, ready, searching, traces, searchPhase, destination?.coordinates);
 
   useEffect(() => {
     if (!container.current) return;
+    setError(false);
     let map: maplibregl.Map;
     try {
       map = new maplibregl.Map({
         container: container.current,
-        style: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+        style: "https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/attenue.json",
         center: [2.349, 48.869], zoom: 13.25,
-        attributionControl: { compact: true },
+        cooperativeGestures: matchMedia("(pointer: coarse)").matches,
+        attributionControl: { compact: false, customAttribution: '<a href="https://cartes.gouv.fr/" target="_blank" rel="noopener">© IGN</a>' },
       });
     } catch {
       setError(true);
       return;
     }
     mapRef.current = map;
+    // A failed style download is asynchronous. Keep the planner usable while allowing a retry.
+    const loadTimeout = window.setTimeout(() => setError(true), 20000);
+    const resize = new ResizeObserver(() => map.resize());
+    resize.observe(container.current);
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
     const updateDetail = () => map.getContainer().classList.toggle("show-parking-labels", map.getZoom() >= 15.6);
     map.on("zoom", updateDetail);
     map.on("load", () => {
+      clearTimeout(loadTimeout);
+      setError(false);
       map.addSource("routes", { type: "geojson", data: empty() });
       map.addLayer({
         id: "drive-shadow", type: "line", source: "routes",
@@ -136,13 +142,15 @@ export function MapView({
       setReady(true);
     });
     return () => {
+      clearTimeout(loadTimeout);
+      resize.disconnect();
       markers.current.forEach((marker) => marker.remove());
       popupRef.current?.remove();
       map.remove();
       mapRef.current = null;
       setReady(false);
     };
-  }, []);
+  }, [attempt]);
 
   const showCircuit = useCallback(() => {
     const map = mapRef.current;
@@ -245,7 +253,15 @@ export function MapView({
     if (destination) {
       const marker = document.createElement("div");
       marker.className = `destination-marker${searching && searchPhase === "streets" ? " destination-search-marker" : ""}`;
-      marker.textContent = "↗";
+      const point = document.createElement("span");
+      point.className = "destination-point";
+      marker.append(point);
+      if (!searching && !chosen) {
+        const label = document.createElement("span");
+        label.className = "destination-label";
+        label.textContent = destination.label.split(" · ")[0];
+        marker.append(label);
+      }
       marker.setAttribute("role", "img");
       marker.setAttribute("aria-label", `Destination: ${destination.label}`);
       addMarker(marker, destination.coordinates);
@@ -265,11 +281,11 @@ export function MapView({
     if (searching && origin && destination) {
       if (searchPhase === "streets") {
         // Center the destination in the unobscured map. Route arrivals never restart this camera move.
-        const mobile = window.innerWidth < 760;
+        const mobile = map.getContainer().clientHeight < 440;
         map.easeTo({
           center: destination.coordinates,
           padding: 0,
-          offset: mobile ? [0, -55] : [215, -25],
+          offset: mobile ? [0, -16] : [0, 0],
           zoom: mobile ? 14.25 : 14.8,
           duration: reduceMotion() ? 0 : 1600,
           essential: false,
@@ -282,7 +298,7 @@ export function MapView({
         else showStreet();
       }
     } else if (destination) {
-      map.easeTo({ center: destination.coordinates, offset: innerWidth < 760 ? [0, -80] : [215, 0], duration: reduceMotion() ? 0 : 800, zoom: 14 });
+      map.easeTo({ center: destination.coordinates, padding: 0, offset: [0, 0], duration: reduceMotion() ? 0 : 800, zoom: 14 });
     }
     camera.current = { plan, focusRequest, selected, selectedStop };
   }, [ready, plan, candidate, selected, selectedStop, focusRequest, focusMode, destination, origin, searching, searchPhase, showCircuit, showStreet]);
@@ -294,26 +310,12 @@ export function MapView({
         <button type="button" className={view === "circuit" ? "active" : ""} onClick={showCircuit} aria-pressed={view === "circuit"}><Route size={15} /> Circuit</button>
         <button type="button" className={view === "street" ? "active" : ""} onClick={showStreet} aria-pressed={view === "street"}><Focus size={15} /> Street</button>
       </div>
-      {stops.length > 1 ? <div className="map-stop-switch" aria-label="Inspect streets in this circuit">
-        {stops.map((stop, index) => <button
-          type="button"
-          key={stop.id}
-          className={view === "street" && selectedStop === index ? "active" : ""}
-          aria-pressed={view === "street" && selectedStop === index}
-          aria-label={`Inspect street ${index + 1}: ${stop.street}. Zoom to street.`}
-          title={`${stop.street} · ${stop.capacity} mapped spaces`}
-          onClick={() => onSelectStop(index)}
-        ><span>{index + 1}</span>{index === 0 ? "Start" : "Street"}</button>)}
-      </div> : null}
-      {view === "circuit" && summary ? <div className="map-street-key map-circuit-key">
-        <span className="map-key-dot" />
-        <span><strong>{circuitLabel} · {summary.capacity} mapped spaces</strong><small>{summary.streetCount} {summary.streetCount === 1 ? "street" : "streets"} · {walkMin === walkMax ? walkMin : `${walkMin}–${walkMax}`} min walk · tap a numbered street to inspect</small></span>
-      </div> : null}
-      {view === "street" ? <div className="map-street-key">
-        <span className="map-key-dot" />
-        <span><strong>{focused.capacity} mapped spaces</strong><small>Tap a section for details · availability unknown</small></span>
-      </div> : null}
     </div> : null}
-    {error ? <div className="map-error">Your browser could not display the map. Circuit recommendations and navigation links still work.</div> : null}
+    {ready && destination && !candidate && !searching && <button type="button" className="map-recenter" aria-label="Recenter on destination"
+      title="Recenter on destination" onClick={() => mapRef.current?.easeTo({ center: destination.coordinates, padding: 0, zoom: 14, duration: reduceMotion() ? 0 : 600 })}>
+      <LocateFixed size={17} />
+    </button>}
+    {ready && candidate && <div className="map-legend" aria-label="Map legend">{stops.length > 1 && <span>Circuit</span>}<span>Walk</span></div>}
+    {error && <div className="map-error" role="status"><strong>Map unavailable</strong><span>You can still compare circuits and open directions.</span><button type="button" onClick={() => setAttempt(n => n + 1)}>Retry map</button></div>}
   </>;
 }
